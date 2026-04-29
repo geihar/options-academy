@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import { runScan, runNakedScan, ScannerCandidate, ScanTickerResult, ChapterSignal, EvidenceItem, NakedCandidate, NakedTickerResult } from '../api/client'
+import { runScan, runNakedScan, fetchScannerUniverse, ScannerCandidate, ScanTickerResult, ChapterSignal, EvidenceItem, NakedCandidate, NakedTickerResult, ScannerUniverseItem, ScannerUniverseResponse } from '../api/client'
 
 // ── Preset watchlists ──────────────────────────────────────────────────────────
 const WATCHLISTS: Record<string, string[]> = {
@@ -701,6 +701,12 @@ function NakedScannerTab() {
 
       {/* Config */}
       <div className="card space-y-4">
+        {/* Auto-discovery from Finviz */}
+        <div>
+          <div className="text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wide">Авто-поиск</div>
+          <ScannerUniversePicker onAdd={tickers => setSelectedTickers(prev => [...new Set([...prev, ...tickers])].slice(0, 20))} />
+        </div>
+
         {/* Watchlist presets */}
         <div>
           <div className="text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wide">Вочлисты</div>
@@ -716,7 +722,7 @@ function NakedScannerTab() {
 
         {/* Ticker input */}
         <div>
-          <div className="text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wide">Тикеры</div>
+          <div className="text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wide">Тикеры вручную</div>
           <div className="flex gap-2">
             <input ref={inputRef} value={tickerInput} onChange={e => setTickerInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); if (tickerInput.trim()) addTicker(tickerInput) } }}
@@ -799,6 +805,198 @@ function NakedScannerTab() {
             Находит OTM опционы с высоким IV Rank (≥ {minIvRank}) для продажи без покрытия.
             Фокус: дельта 0.12–0.35, нет отчётности в DTE, хорошая ликвидность.
           </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Scanner Universe Picker ────────────────────────────────────────────────────
+
+const UNIVERSE_CATEGORIES = [
+  { id: 'top_volume',         label: 'Топ объём',              icon: '🔥', desc: 'Наиболее торгуемые акции с ликвидными опционами' },
+  { id: 'sp500',              label: 'S&P 500',                icon: '📊', desc: 'Активные компоненты индекса' },
+  { id: 'high_volatility',    label: 'Волатильные',            icon: '⚡', desc: 'Высокая месячная волатильность — кандидаты для продажи премии' },
+  { id: 'earnings_week',      label: 'Отчёт (эта неделя)',     icon: '📅', desc: 'Рост IV перед публикацией, IV-crush после' },
+  { id: 'earnings_next_week', label: 'Отчёт (след. неделя)',   icon: '📆', desc: 'Игра на IV-crush через неделю' },
+]
+
+function changeColor(pct: number | null): string {
+  if (pct === null) return 'text-gray-500'
+  if (pct > 0) return 'text-green-400'
+  if (pct < 0) return 'text-red-400'
+  return 'text-gray-400'
+}
+
+function ScannerUniversePicker({ onAdd }: { onAdd: (tickers: string[]) => void }) {
+  const [open, setOpen] = useState(false)
+  const [category, setCategory] = useState('top_volume')
+  const [loading, setLoading] = useState(false)
+  const [data, setData] = useState<ScannerUniverseResponse | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [error, setError] = useState<string | null>(null)
+
+  const load = async (cat: string) => {
+    setLoading(true)
+    setError(null)
+    setData(null)
+    try {
+      const res = await fetchScannerUniverse(cat, 40)
+      setData(res)
+      setSelected(new Set(res.items.slice(0, 15).map(i => i.ticker)))
+    } catch {
+      setError('Не удалось загрузить список тикеров')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleCategoryClick = (cat: string) => {
+    setCategory(cat)
+    if (open) load(cat)
+  }
+
+  const handleOpen = () => {
+    if (!open) {
+      setOpen(true)
+      if (!data) load(category)
+    } else {
+      setOpen(false)
+    }
+  }
+
+  const toggle = (ticker: string) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(ticker)) next.delete(ticker); else next.add(ticker)
+      return next
+    })
+  }
+
+  const handleConfirm = () => {
+    const list = [...selected]
+    if (list.length > 0) {
+      onAdd(list)
+      setOpen(false)
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <button
+        onClick={handleOpen}
+        className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
+          open
+            ? 'bg-indigo-600/20 border-indigo-500/40 text-indigo-300'
+            : 'bg-gray-800 border-gray-700 text-gray-300 hover:text-white hover:border-gray-600'
+        }`}
+      >
+        <span>🌐</span>
+        <span>Авто-поиск с Finviz</span>
+        <span className={`text-xs opacity-60 transition-transform ${open ? 'rotate-180' : ''}`}>▼</span>
+      </button>
+
+      {open && (
+        <div className="border border-gray-700/50 rounded-xl bg-gray-900/80 p-4 space-y-4">
+          {/* Category tabs */}
+          <div className="flex gap-2 flex-wrap">
+            {UNIVERSE_CATEGORIES.map(cat => (
+              <button
+                key={cat.id}
+                onClick={() => handleCategoryClick(cat.id)}
+                title={cat.desc}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border ${
+                  category === cat.id
+                    ? 'bg-blue-600/20 border-blue-500/40 text-blue-300'
+                    : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white hover:border-gray-600'
+                }`}
+              >
+                <span>{cat.icon}</span>
+                <span>{cat.label}</span>
+              </button>
+            ))}
+          </div>
+
+          {/* Loading */}
+          {loading && (
+            <div className="flex items-center gap-2 text-sm text-gray-400 py-3">
+              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+              </svg>
+              Загрузка с Finviz...
+            </div>
+          )}
+
+          {error && (
+            <div className="text-red-400 text-xs bg-red-900/20 rounded-lg p-3">{error}</div>
+          )}
+
+          {/* Results */}
+          {data && !loading && (
+            <>
+              <div className="flex items-center justify-between text-xs text-gray-500">
+                <span>
+                  {data.label}
+                  {' '}
+                  <span className={`ml-1 px-1.5 py-0.5 rounded text-xs ${data.source === 'finviz' ? 'bg-green-500/15 text-green-400' : 'bg-gray-700 text-gray-400'}`}>
+                    {data.source === 'finviz' ? 'Finviz' : 'fallback'}
+                  </span>
+                </span>
+                <span>
+                  выбрано <span className="text-white font-semibold">{selected.size}</span> из {data.items.length}
+                </span>
+              </div>
+
+              {/* Ticker grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 gap-1.5 max-h-64 overflow-y-auto pr-1">
+                {data.items.map((item: ScannerUniverseItem) => {
+                  const isSelected = selected.has(item.ticker)
+                  return (
+                    <button
+                      key={item.ticker}
+                      onClick={() => toggle(item.ticker)}
+                      className={`rounded-lg px-2 py-1.5 text-left transition-colors border text-xs ${
+                        isSelected
+                          ? 'bg-blue-600/25 border-blue-500/50 text-blue-200'
+                          : 'bg-gray-800/60 border-gray-700/50 text-gray-400 hover:text-gray-200 hover:border-gray-600'
+                      }`}
+                    >
+                      <div className="font-bold text-sm leading-none mb-0.5">{item.ticker}</div>
+                      {item.sector && (
+                        <div className="text-gray-500 truncate text-xs">{item.sector}</div>
+                      )}
+                      <div className="flex items-center justify-between mt-0.5 gap-1">
+                        {item.price != null && (
+                          <span className="text-gray-400">${item.price.toFixed(0)}</span>
+                        )}
+                        {item.change_pct != null && (
+                          <span className={`font-medium ${changeColor(item.change_pct)}`}>
+                            {item.change_pct > 0 ? '+' : ''}{item.change_pct.toFixed(1)}%
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+
+              <div className="flex items-center gap-3 pt-1 border-t border-gray-700/40">
+                <div className="flex gap-2 text-xs">
+                  <button onClick={() => setSelected(new Set(data.items.map(i => i.ticker)))} className="text-blue-400 hover:text-blue-300">Выбрать все</button>
+                  <span className="text-gray-700">·</span>
+                  <button onClick={() => setSelected(new Set())} className="text-gray-500 hover:text-gray-300">Снять выбор</button>
+                </div>
+                <button
+                  onClick={handleConfirm}
+                  disabled={selected.size === 0}
+                  className="ml-auto px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-sm font-medium transition-colors"
+                >
+                  Добавить {selected.size > 0 ? `${selected.size} тикеров →` : '→'}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -911,6 +1109,12 @@ export default function Scanner() {
 
       {/* Config panel */}
       <div className="card space-y-4">
+        {/* Auto-discovery from Finviz */}
+        <div>
+          <div className="text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wide">Авто-поиск</div>
+          <ScannerUniversePicker onAdd={tickers => setSelectedTickers(prev => [...new Set([...prev, ...tickers])].slice(0, 30))} />
+        </div>
+
         {/* Watchlist presets */}
         <div>
           <div className="text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wide">Вочлисты</div>
@@ -929,7 +1133,7 @@ export default function Scanner() {
 
         {/* Ticker input */}
         <div>
-          <div className="text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wide">Тикеры</div>
+          <div className="text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wide">Тикеры вручную</div>
           <div className="flex gap-2">
             <input
               ref={inputRef}

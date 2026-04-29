@@ -351,7 +351,7 @@ export async function runScan(params: {
   min_open_interest?: number
   strategies?: string[]
 }): Promise<ScanResponse> {
-  const res = await apiClient.post<ScanResponse>('/api/scan', params)
+  const res = await apiClient.post<ScanResponse>('/api/scan', params, { timeout: 120_000 })
   return res.data
 }
 
@@ -409,7 +409,108 @@ export async function runNakedScan(params: {
   min_volume?: number
   min_open_interest?: number
 }): Promise<NakedScanResponse> {
-  const res = await apiClient.post<NakedScanResponse>('/api/naked-scan', params)
+  const res = await apiClient.post<NakedScanResponse>('/api/naked-scan', params, { timeout: 120_000 })
+  return res.data
+}
+
+// ── Scanner universe (Finviz auto-discovery) ──────────────────────────────────
+
+export interface ScannerUniverseItem {
+  ticker: string
+  company: string
+  sector: string | null
+  price: number | null
+  change_pct: number | null
+  volume: number | null
+}
+
+export interface ScannerUniverseResponse {
+  source: 'finviz' | 'fallback'
+  category: string
+  label: string
+  items: ScannerUniverseItem[]
+  total: number
+}
+
+export async function fetchScannerUniverse(
+  category = 'top_volume',
+  maxResults = 40,
+): Promise<ScannerUniverseResponse> {
+  const res = await apiClient.get<ScannerUniverseResponse>('/api/scanner-universe', {
+    params: { category, max_results: maxResults },
+  })
+  return res.data
+}
+
+// ── Short Squeeze scanner types ───────────────────────────────────────────────
+
+export interface PricePoint {
+  date: string
+  close: number
+  volume: number
+}
+
+export interface SqueezeMetrics {
+  ticker: string
+  name: string
+  current_price: number
+  sector: string | null
+  short_interest_pct: number | null
+  days_to_cover: number | null
+  shares_short: number | null
+  shares_short_prev: number | null
+  si_change_pct: number | null
+  float_shares: number | null
+  shares_outstanding: number | null
+  change_1d: number | null
+  change_5d: number | null
+  change_20d: number | null
+  change_52w_low_pct: number | null
+  change_52w_high_pct: number | null
+  week_52_high: number | null
+  week_52_low: number | null
+  volume_today: number | null
+  avg_volume_20d: number | null
+  volume_ratio: number | null
+  iv_rank: number | null
+  hv_20: number | null
+  market_cap: number | null
+  beta: number | null
+  squeeze_score: number
+  squeeze_potential: string
+  squeeze_phase: string
+  key_factors: string[]
+  risk_factors: string[]
+  price_history: PricePoint[]
+  error: string | null
+}
+
+export interface SqueezeScanResponse {
+  results: SqueezeMetrics[]
+}
+
+export async function runSqueezeScan(tickers: string[]): Promise<SqueezeScanResponse> {
+  const res = await apiClient.post<SqueezeScanResponse>('/api/squeeze-scan', { tickers }, { timeout: 120_000 })
+  return res.data
+}
+
+export interface UniverseItem {
+  ticker: string
+  company: string
+  short_float_pct: number | null
+  short_ratio: number | null
+}
+
+export interface UniverseResponse {
+  source: 'finviz' | 'fallback'
+  items: UniverseItem[]
+  total: number
+}
+
+export async function fetchSqueezeUniverse(minShortFloat = 10): Promise<UniverseResponse> {
+  const res = await apiClient.get<UniverseResponse>('/api/squeeze-universe', {
+    params: { min_short_float: minShortFloat, max_results: 60 },
+  })
   return res.data
 }
 

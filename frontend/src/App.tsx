@@ -6,6 +6,8 @@ import TradingGame from './pages/TradingGame'
 import Scanner from './pages/Scanner'
 import Positions from './pages/Positions'
 import Roadmap from './pages/Roadmap'
+import SqueezeScanner from './pages/SqueezeScanner'
+import OptionLab from './pages/OptionLab'
 
 function NavItem({ to, label }: { to: string; label: string }) {
   return (
@@ -40,6 +42,8 @@ export default function App() {
               <NavItem to="/calculator" label="Калькулятор" />
               <NavItem to="/game" label="🎮 Игра" />
               <NavItem to="/scanner" label="📡 Сканер" />
+              <NavItem to="/squeeze" label="🚀 Squeeze" />
+              <NavItem to="/lab" label="🧪 Лаборатория" />
               <NavItem to="/positions" label="📋 Позиции" />
               <NavItem to="/roadmap" label="🗺️ Путь" />
             </nav>
@@ -56,6 +60,8 @@ export default function App() {
             <Route path="/calculator" element={<Calculator />} />
             <Route path="/game" element={<TradingGame />} />
             <Route path="/scanner" element={<Scanner />} />
+            <Route path="/squeeze" element={<SqueezeScanner />} />
+            <Route path="/lab" element={<OptionLab />} />
             <Route path="/positions" element={<Positions />} />
             <Route path="/roadmap" element={<Roadmap />} />
           </Routes>

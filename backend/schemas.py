@@ -451,3 +451,69 @@ class NakedTickerResult(BaseModel):
 class NakedScanResponse(BaseModel):
     total_candidates: int
     results: List[NakedTickerResult]
+
+
+# ---------------------------------------------------------------------------
+# Short Squeeze scanner schemas
+# ---------------------------------------------------------------------------
+
+class SqueezeScanRequest(BaseModel):
+    tickers: List[str] = Field(..., min_length=1, max_length=30)
+
+
+class PricePoint(BaseModel):
+    date: str
+    close: float
+    volume: int
+
+
+class SqueezeMetricsSchema(BaseModel):
+    ticker: str
+    name: str
+    current_price: float
+    sector: Optional[str] = None
+
+    # Short interest
+    short_interest_pct: Optional[float] = None
+    days_to_cover: Optional[float] = None
+    shares_short: Optional[int] = None
+    shares_short_prev: Optional[int] = None
+    si_change_pct: Optional[float] = None
+    float_shares: Optional[int] = None
+    shares_outstanding: Optional[int] = None
+
+    # Price momentum
+    change_1d: Optional[float] = None
+    change_5d: Optional[float] = None
+    change_20d: Optional[float] = None
+    change_52w_low_pct: Optional[float] = None
+    change_52w_high_pct: Optional[float] = None
+    week_52_high: Optional[float] = None
+    week_52_low: Optional[float] = None
+
+    # Volume
+    volume_today: Optional[int] = None
+    avg_volume_20d: Optional[float] = None
+    volume_ratio: Optional[float] = None
+
+    # IV
+    iv_rank: Optional[float] = None
+    hv_20: Optional[float] = None
+
+    # Fundamentals
+    market_cap: Optional[float] = None
+    beta: Optional[float] = None
+
+    # Output
+    squeeze_score: float
+    squeeze_potential: str
+    squeeze_phase: str
+    key_factors: List[str] = []
+    risk_factors: List[str] = []
+    price_history: List[PricePoint] = []
+
+    error: Optional[str] = None
+
+
+class SqueezeScanResponse(BaseModel):
+    results: List[SqueezeMetricsSchema]
