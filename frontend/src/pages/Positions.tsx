@@ -57,16 +57,30 @@ function ExpirationPanel({ pos }: { pos: Position }) {
   // Covered Call — особая логика
   if (option_type === 'call' && direction === 'short' && is_covered) {
     const premiumTotal = entry_price * mult
-    const effectiveSellPrice = strike + entry_price   // цена реализации акций с учётом премии
-    const opportunityCostThreshold = effectiveSellPrice
+    const effectiveSellPrice = strike + entry_price   // цена реализации с учётом премии
 
-    // Текущий P&L на опционе прямо сейчас (не при экспирации)
-    const currentPnl = currentOptPrice !== null
-      ? (entry_price - currentOptPrice) * mult  // short: заработали если опцион подешевел
+    // Текущий P&L на опционе
+    const currentOptionPnl = currentOptPrice !== null
+      ? (entry_price - currentOptPrice) * mult
       : null
 
-    // P&L на опционе если акция остаётся на текущем уровне до экспирации
-    const flatPnl = currentPrice !== null
+    // P&L на акциях (если записан stock_cost_basis)
+    const sharesOwned = pos.shares_held ?? (contracts * 100)
+    const costBasis = pos.stock_cost_basis ?? null
+    const stockPnl = (costBasis !== null && currentPrice !== null)
+      ? (currentPrice - costBasis) * sharesOwned
+      : null
+    const totalCurrentPnl = (currentOptionPnl !== null && stockPnl !== null)
+      ? currentOptionPnl + stockPnl
+      : currentOptionPnl
+
+    // При исполнении (акция выше страйка): получаем страйк за акции + сохраняем премию
+    const assignedTotalPnl = costBasis !== null
+      ? (strike - costBasis) * sharesOwned + premiumTotal  // capital gain on stock + premium
+      : null
+
+    // При экспирации без исполнения (акция ≤ страйка): держим акции + получили премию
+    const flatOptionPnl = currentPrice !== null
       ? (currentPrice <= strike
           ? +premiumTotal
           : -(Math.max(0, currentPrice - strike) - entry_price) * mult)
@@ -76,12 +90,19 @@ function ExpirationPanel({ pos }: { pos: Position }) {
       <div className="bg-gray-800/30 border border-gray-700/40 rounded-xl p-3 space-y-3">
         <div className="text-xs text-gray-500 font-semibold uppercase tracking-wide">Покрытый колл — P&L</div>
 
-        {/* Текущий P&L */}
-        {currentPnl !== null && (
-          <div className={`rounded-lg px-3 py-2 flex items-center justify-between ${currentPnl >= 0 ? 'bg-green-500/10 border border-green-500/20' : 'bg-red-500/10 border border-red-500/20'}`}>
-            <span className="text-xs text-gray-400">Позиция сейчас</span>
-            <span className={`text-sm font-bold ${pnlColor(currentPnl)}`}>
-              {fmt$(currentPnl)} {currentPnl >= 0 ? '— в прибыли' : '— в убытке'}
+        {/* Текущий совокупный P&L */}
+        {totalCurrentPnl !== null && (
+          <div className={`rounded-lg px-3 py-2 flex items-center justify-between ${totalCurrentPnl >= 0 ? 'bg-green-500/10 border border-green-500/20' : 'bg-red-500/10 border border-red-500/20'}`}>
+            <div>
+              <div className="text-xs text-gray-400">Суммарная позиция сейчас</div>
+              {stockPnl !== null && currentOptionPnl !== null && (
+                <div className="text-xs text-gray-600 mt-0.5">
+                  Акции: {fmt$(stockPnl)} · Опцион: {fmt$(currentOptionPnl)}
+                </div>
+              )}
+            </div>
+            <span className={`text-sm font-bold ${pnlColor(totalCurrentPnl)}`}>
+              {fmt$(totalCurrentPnl)}
             </span>
           </div>
         )}
@@ -90,26 +111,37 @@ function ExpirationPanel({ pos }: { pos: Position }) {
           <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-2 text-center">
             <div className="text-gray-500 mb-0.5">Макс. прибыль (опцион)</div>
             <div className="text-green-400 font-bold">+${premiumTotal.toFixed(0)}</div>
-            <div className="text-gray-600 mt-0.5">акция ниже ${strike} — опцион сгорает</div>
+            <div className="text-gray-600 mt-0.5">акция ниже ${strike}</div>
           </div>
           <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-2 text-center">
-            <div className="text-gray-500 mb-0.5">При исполнении</div>
+            <div className="text-gray-500 mb-0.5">Если исполнят</div>
             <div className="text-blue-400 font-bold">${effectiveSellPrice.toFixed(2)}/акц.</div>
-            <div className="text-gray-600 mt-0.5">продашь акции + оставишь премию</div>
+            {assignedTotalPnl !== null && (
+              <div className={`mt-0.5 font-semibold ${pnlColor(assignedTotalPnl)}`}>
+                Итого: {fmt$(assignedTotalPnl)}
+              </div>
+            )}
           </div>
           <div className="bg-gray-800/60 rounded-lg p-2 text-center">
-            <div className="text-gray-500 mb-0.5">Если флэт к экспир.</div>
-            <div className={`font-bold ${pnlColor(flatPnl)}`}>
-              {flatPnl !== null ? fmt$(flatPnl) : '—'}
+            <div className="text-gray-500 mb-0.5">Если флэт (опцион)</div>
+            <div className={`font-bold ${pnlColor(flatOptionPnl)}`}>
+              {flatOptionPnl !== null ? fmt$(flatOptionPnl) : '—'}
             </div>
-            <div className="text-gray-600 mt-0.5">на опционе</div>
           </div>
         </div>
 
+        {costBasis !== null && (
+          <div className="text-xs text-gray-500 flex gap-4 flex-wrap">
+            <span>Себестоимость акций: ${costBasis.toFixed(2)}/акц.</span>
+            <span>Акций в покрытии: {sharesOwned}</span>
+            {currentPrice && <span>Текущая цена: ${currentPrice.toFixed(2)}/акц.</span>}
+          </div>
+        )}
+
         <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg px-3 py-2 text-xs text-yellow-300">
-          Убытка на опционе нет — только упущенная выгода выше ${opportunityCostThreshold.toFixed(2)}
-          {currentPrice && currentPrice > opportunityCostThreshold
-            ? `. Сейчас акция $${currentPrice.toFixed(2)} — упущено +$${((currentPrice - opportunityCostThreshold) * 100 * contracts).toFixed(0)}`
+          Убытка на опционе нет — только упущенная выгода выше ${effectiveSellPrice.toFixed(2)}
+          {currentPrice && currentPrice > effectiveSellPrice
+            ? `. Акция $${currentPrice.toFixed(2)} — упущено +$${((currentPrice - effectiveSellPrice) * sharesOwned).toFixed(0)}`
             : ''}
         </div>
 
@@ -736,6 +768,8 @@ interface FormState {
   entry_date: string
   notes: string
   is_covered: boolean
+  shares_held: string
+  stock_cost_basis: string
 }
 
 const EMPTY_FORM: FormState = {
@@ -749,6 +783,8 @@ const EMPTY_FORM: FormState = {
   entry_date: today(),
   notes: '',
   is_covered: false,
+  shares_held: '',
+  stock_cost_basis: '',
 }
 
 function AddPositionForm({ onAdded }: { onAdded: () => void }) {
@@ -769,6 +805,7 @@ function AddPositionForm({ onAdded }: { onAdded: () => void }) {
     }
     setLoading(true)
     try {
+      const isCovered = form.direction === 'short' ? form.is_covered : false
       await addPosition({
         user_session_id: SESSION_ID,
         ticker: form.ticker.toUpperCase(),
@@ -780,7 +817,9 @@ function AddPositionForm({ onAdded }: { onAdded: () => void }) {
         entry_price: parseFloat(form.entry_price),
         entry_date: form.entry_date,
         notes: form.notes || undefined,
-        is_covered: form.direction === 'short' ? form.is_covered : false,
+        is_covered: isCovered,
+        shares_held: isCovered && form.shares_held ? parseInt(form.shares_held) : undefined,
+        stock_cost_basis: isCovered && form.stock_cost_basis ? parseFloat(form.stock_cost_basis) : undefined,
       })
       setForm(EMPTY_FORM)
       onAdded()
@@ -848,15 +887,52 @@ function AddPositionForm({ onAdded }: { onAdded: () => void }) {
       </div>
 
       {isShort && (
-        <label className="flex items-center gap-2 cursor-pointer select-none w-fit">
-          <input
-            type="checkbox"
-            checked={form.is_covered}
-            onChange={e => setForm(f => ({ ...f, is_covered: e.target.checked }))}
-            className="w-4 h-4 rounded accent-blue-500"
-          />
-          <span className="text-sm text-gray-300">{coveredLabel}</span>
-        </label>
+        <div className="space-y-3">
+          <label className="flex items-center gap-2 cursor-pointer select-none w-fit">
+            <input
+              type="checkbox"
+              checked={form.is_covered}
+              onChange={e => setForm(f => ({ ...f, is_covered: e.target.checked }))}
+              className="w-4 h-4 rounded accent-blue-500"
+            />
+            <span className="text-sm text-gray-300">{coveredLabel}</span>
+          </label>
+
+          {form.is_covered && (
+            <div className="grid grid-cols-2 gap-3 pl-6 border-l-2 border-blue-500/30">
+              <div>
+                <label className={labelCls}>Акций в покрытии</label>
+                <input
+                  type="number"
+                  min="1"
+                  step="100"
+                  placeholder={`${(parseInt(form.contracts) || 1) * 100}`}
+                  value={form.shares_held}
+                  onChange={set('shares_held')}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className={labelCls}>
+                  {form.option_type === 'call' ? 'Себест. акции ($/акц.)' : 'Резерв кэша ($/акц.)'}
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  placeholder="150.00"
+                  value={form.stock_cost_basis}
+                  onChange={set('stock_cost_basis')}
+                  className={inputCls}
+                />
+              </div>
+              <div className="col-span-2 text-xs text-gray-600">
+                {form.option_type === 'call'
+                  ? 'Укажите среднюю цену покупки акций для расчёта суммарного P&L позиции'
+                  : 'Укажите резервируемую сумму на акцию для расчёта доходности на капитал'}
+              </div>
+            </div>
+          )}
+        </div>
       )}
 
       <div>

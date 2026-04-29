@@ -198,6 +198,263 @@ def _recommend_strategy(
     return strategy, rationale
 
 
+@dataclass
+class NakedCandidate:
+    """A naked (uncovered) short option candidate."""
+    ticker: str
+    current_price: float
+    strike: float
+    expiry: str
+    option_type: str          # "call" | "put"
+    days_to_expiry: int
+    market_price: float
+    bid: float
+    ask: float
+    volume: int
+    open_interest: int
+    iv: float
+    delta: float              # signed
+    theta: float
+    iv_rank: Optional[float]
+    annualized_yield: float             # % per year relative to stock price
+    annualized_yield_on_margin: float   # % per year relative to required margin
+    required_margin_est: float          # estimated margin per contract ($)
+    max_profit: float                   # premium collected per 1 contract (× 100)
+    breakeven: float
+    breakeven_move_pct: float           # negative = against us
+    days_to_earnings: Optional[int]
+    risk_factors: list
+    naked_score: float
+    quality: str
+
+
+def _naked_quality(score: float) -> str:
+    if score >= 70:
+        return "Отличная"
+    elif score >= 50:
+        return "Хорошая"
+    elif score >= 35:
+        return "Средняя"
+    return "Слабая"
+
+
+def scan_naked_options(
+    ticker: str,
+    fetcher,
+    iv_stats: dict,
+    min_iv_rank: float = 40.0,
+    option_type_filter: str = "both",  # "calls" | "puts" | "both"
+    min_dte: int = 25,
+    max_dte: int = 50,
+    min_delta: float = 0.12,
+    max_delta: float = 0.35,
+    min_volume: int = 5,
+    min_open_interest: int = 30,
+    r: float = 0.05,
+) -> tuple[list, Optional[str]]:
+    """
+    Find naked (uncovered) short option candidates.
+    Returns (candidates, skipped_reason).
+    skipped_reason is set when the ticker doesn't pass pre-filters.
+    """
+    try:
+        chain_data = fetcher.get_options_chain(ticker)
+    except Exception as e:
+        logger.warning(f"Failed to fetch chain for {ticker}: {e}")
+        return [], None
+
+    current_price = chain_data.get("current_price", 0)
+    if not current_price:
+        return [], None
+
+    iv_rank = iv_stats.get("iv_rank")
+    hv_30 = iv_stats.get("hv_30")
+
+    if iv_rank is None or iv_rank < min_iv_rank:
+        reason = f"IV Rank {iv_rank:.0f if iv_rank else 'N/A'} < {min_iv_rank:.0f} — IV не достаточно высокий для продажи"
+        return [], reason
+
+    dte_earn = days_to_earnings(ticker)
+    today = date.today()
+    candidates = []
+
+    all_options = []
+    if option_type_filter in ("calls", "both"):
+        for opt in chain_data.get("calls", []):
+            all_options.append({**opt, "option_type": "call"})
+    if option_type_filter in ("puts", "both"):
+        for opt in chain_data.get("puts", []):
+            all_options.append({**opt, "option_type": "put"})
+
+    for opt in all_options:
+        try:
+            expiry_date = date.fromisoformat(opt["expiry"])
+        except (ValueError, KeyError):
+            continue
+
+        dte = (expiry_date - today).days
+        if dte < min_dte or dte > max_dte:
+            continue
+
+        volume = opt.get("volume", 0) or 0
+        oi = opt.get("open_interest", 0) or 0
+        if volume < min_volume or oi < min_open_interest:
+            continue
+
+        bid = opt.get("bid", 0) or 0
+        ask = opt.get("ask", 0) or 0
+        last = opt.get("last", 0) or 0
+        mid = (bid + ask) / 2 if bid and ask else last
+        if mid < 0.10:
+            continue
+
+        option_type = opt["option_type"]
+        strike = opt["strike"]
+        T = max(dte, 1) / 365.0
+
+        iv = opt.get("iv")
+        if not iv:
+            try:
+                iv = implied_volatility(mid, current_price, strike, T, r, option_type)
+            except Exception:
+                iv = None
+        if not iv or iv <= 0:
+            continue
+
+        try:
+            bs = black_scholes(current_price, strike, T, r, iv, option_type)
+        except Exception:
+            continue
+
+        abs_delta = abs(bs.delta)
+        if abs_delta < min_delta or abs_delta > max_delta:
+            continue
+
+        # Spread check
+        spread_pct = (ask - bid) / mid if mid > 0 and bid > 0 else 1.0
+        if spread_pct > 0.45:
+            continue
+
+        # ── Risk factors ──────────────────────────────────────────────────────
+        risk_factors = []
+        if dte_earn is not None and dte_earn <= dte:
+            risk_factors.append(f"Отчётность через {dte_earn} дн. — риск резкого движения")
+        if abs_delta > 0.28:
+            risk_factors.append(f"Дельта {abs_delta:.2f} — опцион близко к деньгам")
+        if hv_30 and iv < hv_30:
+            risk_factors.append("IV ниже HV30 — продаёте дешёвую волатильность")
+        if spread_pct > 0.20:
+            risk_factors.append(f"Широкий спред ({spread_pct*100:.0f}% mid) — возможны проблемы при закрытии")
+        if volume < 20:
+            risk_factors.append(f"Низкий объём ({volume}) — сложнее закрыть позицию")
+        if option_type == "call":
+            risk_factors.append("Short call — неограниченный убыток при резком росте акции")
+        else:
+            risk_factors.append("Short put — убыток до нуля акции (аналог покупки акции на страйке)")
+
+        # ── Score ─────────────────────────────────────────────────────────────
+        score = 0.0
+
+        # IV rank (primary — want elevated IV)
+        if iv_rank >= 70:
+            score += 35
+        elif iv_rank >= 55:
+            score += 27
+        elif iv_rank >= 45:
+            score += 19
+        else:
+            score += 10
+
+        # Delta sweet spot: 0.15–0.25 OTM
+        if 0.15 <= abs_delta <= 0.25:
+            score += 25
+        elif 0.12 <= abs_delta < 0.15 or 0.25 < abs_delta <= 0.30:
+            score += 17
+        else:
+            score += 8
+
+        # No earnings event during DTE
+        if dte_earn is None or dte_earn > dte:
+            score += 15
+        else:
+            score -= 20  # heavy penalty for earnings risk
+
+        # Premium annualized yield vs stock price
+        ann_yield = (mid / current_price) * (365.0 / dte) * 100
+        if ann_yield >= 25:
+            score += 15
+        elif ann_yield >= 15:
+            score += 10
+        elif ann_yield >= 8:
+            score += 5
+
+        # Liquidity bonus
+        if spread_pct <= 0.10:
+            score += 10
+        elif spread_pct <= 0.20:
+            score += 5
+
+        # IV premium over HV30 (selling rich vol)
+        if hv_30 and iv > hv_30 * 1.25:
+            score += 10
+        elif hv_30 and iv > hv_30:
+            score += 5
+
+        score = max(0.0, min(100.0, score))
+        if score < 30:
+            continue
+
+        # ── Breakeven ─────────────────────────────────────────────────────────
+        if option_type == "call":
+            breakeven = strike + mid
+            move_pct = (breakeven - current_price) / current_price * 100
+        else:
+            breakeven = strike - mid
+            move_pct = (breakeven - current_price) / current_price * 100
+
+        # ── Margin estimate (CBOE rule-based, simplified) ─────────────────────
+        otm_amount = max(0.0, abs(strike - current_price) - mid)
+        required_margin = max(
+            (0.20 * current_price - otm_amount + mid) * 100,
+            (0.10 * current_price + mid) * 100,
+        )
+        ann_yield_on_margin = (
+            (mid * 100 / required_margin) * (365.0 / dte) * 100
+            if required_margin > 0 else 0.0
+        )
+
+        candidates.append(NakedCandidate(
+            ticker=ticker,
+            current_price=current_price,
+            strike=strike,
+            expiry=opt["expiry"],
+            option_type=option_type,
+            days_to_expiry=dte,
+            market_price=round(mid, 4),
+            bid=bid,
+            ask=ask,
+            volume=volume,
+            open_interest=oi,
+            iv=round(iv, 4),
+            delta=round(bs.delta, 4),
+            theta=round(bs.theta, 4),
+            iv_rank=round(iv_rank, 1) if iv_rank is not None else None,
+            annualized_yield=round(ann_yield, 1),
+            annualized_yield_on_margin=round(ann_yield_on_margin, 1),
+            required_margin_est=round(required_margin, 0),
+            max_profit=round(mid * 100, 2),
+            breakeven=round(breakeven, 2),
+            breakeven_move_pct=round(move_pct, 2),
+            days_to_earnings=dte_earn,
+            risk_factors=risk_factors,
+            naked_score=round(score, 1),
+            quality=_naked_quality(score),
+        ))
+
+    candidates.sort(key=lambda c: c.naked_score, reverse=True)
+    return candidates[:5], None
+
+
 def scan_ticker_options(
     ticker: str,
     fetcher,

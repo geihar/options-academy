@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import { runScan, ScannerCandidate, ScanTickerResult, ChapterSignal, EvidenceItem } from '../api/client'
+import { runScan, runNakedScan, ScannerCandidate, ScanTickerResult, ChapterSignal, EvidenceItem, NakedCandidate, NakedTickerResult } from '../api/client'
 
 // ── Preset watchlists ──────────────────────────────────────────────────────────
 const WATCHLISTS: Record<string, string[]> = {
@@ -439,9 +439,376 @@ function TickerSection({ result }: { result: ScanTickerResult }) {
   )
 }
 
+// ── Naked Candidate Card ───────────────────────────────────────────────────────
+
+function NakedCandidateCard({ c }: { c: NakedCandidate }) {
+  const [expanded, setExpanded] = useState(false)
+  const typeLabel = c.option_type === 'call' ? 'CALL' : 'PUT'
+  const typeColor = c.option_type === 'call'
+    ? 'text-green-400 bg-green-500/10 border-green-500/30'
+    : 'text-red-400 bg-red-500/10 border-red-500/30'
+  const scoreColor_ = c.naked_score >= 70 ? 'text-green-400' : c.naked_score >= 50 ? 'text-yellow-400' : 'text-orange-400'
+  const scoreBg_ = c.naked_score >= 70
+    ? 'bg-green-500/15 border-green-500/30'
+    : c.naked_score >= 50
+    ? 'bg-yellow-500/15 border-yellow-500/30'
+    : 'bg-orange-500/15 border-orange-500/30'
+
+  const hasEarningsRisk = c.days_to_earnings !== null && c.days_to_earnings <= c.days_to_expiry
+
+  return (
+    <div className={`border rounded-xl overflow-hidden ${scoreBg_}`}>
+      {/* Header */}
+      <div className="p-4 pb-3">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`text-xs font-bold px-2 py-0.5 rounded border ${typeColor}`}>{typeLabel}</span>
+            <span className="text-white font-bold text-xl">${c.strike}</span>
+            <span className="text-gray-400 text-sm">{c.expiry}</span>
+            <span className="text-gray-500 text-xs">({c.days_to_expiry} дн.)</span>
+            {hasEarningsRisk && (
+              <span className="text-xs px-2 py-0.5 rounded bg-red-500/20 border border-red-500/40 text-red-400">
+                Отчётность через {c.days_to_earnings} дн.!
+              </span>
+            )}
+          </div>
+          <div className="text-right">
+            <div className={`text-3xl font-bold leading-none ${scoreColor_}`}>{c.naked_score.toFixed(0)}</div>
+            <div className="text-xs text-gray-500 mt-0.5">{c.quality}</div>
+          </div>
+        </div>
+
+        {/* Quick metrics */}
+        <div className="grid grid-cols-5 gap-2 mt-3 text-xs">
+          {[
+            { label: 'Премия', value: `$${c.market_price.toFixed(2)}` },
+            { label: 'IV', value: `${(c.iv * 100).toFixed(1)}%` },
+            { label: 'IV Rank', value: c.iv_rank != null ? `${c.iv_rank.toFixed(0)}/100` : '—',
+              color: (c.iv_rank ?? 50) >= 50 ? 'text-yellow-400' : 'text-white' },
+            { label: '|Δ|', value: Math.abs(c.delta).toFixed(2) },
+            { label: 'Θ/день', value: `-$${Math.abs(c.theta * 100).toFixed(2)}`, color: 'text-green-400' },
+          ].map(m => (
+            <div key={m.label} className="bg-gray-800/50 rounded-lg p-2 text-center">
+              <div className="text-gray-500 mb-0.5">{m.label}</div>
+              <div className={`font-semibold ${m.color ?? 'text-white'}`}>{m.value}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Key economics */}
+        <div className="grid grid-cols-3 gap-2 mt-2 text-xs">
+          <div className="bg-gray-800/40 rounded-lg p-2 text-center">
+            <div className="text-gray-500 mb-0.5">Макс. прибыль</div>
+            <div className="text-green-400 font-bold">+${c.max_profit.toFixed(0)}/контр.</div>
+          </div>
+          <div className="bg-gray-800/40 rounded-lg p-2 text-center">
+            <div className="text-gray-500 mb-0.5">Безубыток</div>
+            <div className="text-white font-bold">${c.breakeven.toFixed(2)}</div>
+            <div className={`text-xs mt-0.5 font-medium ${c.option_type === 'call' ? 'text-red-400' : 'text-green-400'}`}>
+              {c.breakeven_move_pct > 0 ? '+' : ''}{c.breakeven_move_pct.toFixed(1)}%
+            </div>
+          </div>
+          <div className="bg-gray-800/40 rounded-lg p-2 text-center">
+            <div className="text-gray-500 mb-0.5">Доходность/год</div>
+            <div className="text-blue-400 font-bold">{c.annualized_yield.toFixed(0)}%</div>
+            <div className="text-gray-600 text-xs mt-0.5">на марже: {c.annualized_yield_on_margin.toFixed(0)}%</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Risk factors — always visible warning block */}
+      {c.risk_factors.length > 0 && (
+        <div className="px-4 pb-3 space-y-1">
+          {c.risk_factors.map((rf, i) => (
+            <div key={i} className="flex items-start gap-2 text-xs text-orange-300 bg-orange-500/8 border border-orange-500/20 rounded-lg px-3 py-1.5">
+              <span className="shrink-0 mt-0.5">⚠</span>
+              <span>{rf}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Expandable details */}
+      <div className="border-t border-gray-700/40">
+        <button
+          onClick={() => setExpanded(v => !v)}
+          className="w-full py-2 text-xs text-gray-500 hover:text-gray-300 transition-colors flex items-center justify-center gap-1"
+        >
+          {expanded ? 'Скрыть детали ▲' : 'Подробнее ▼'}
+        </button>
+        {expanded && (
+          <div className="px-4 pb-4 space-y-3">
+            <div className="text-xs text-gray-500 font-semibold uppercase tracking-wide mb-1">Параметры позиции</div>
+            <div className="space-y-1.5 text-xs">
+              {[
+                { label: 'Цена акции', val: `$${c.current_price.toFixed(2)}` },
+                { label: 'Bid / Ask', val: `$${c.bid.toFixed(2)} / $${c.ask.toFixed(2)}` },
+                { label: 'Объём / OI', val: `${c.volume.toLocaleString()} / ${c.open_interest.toLocaleString()}` },
+                { label: 'Оценочная маржа (1 контр.)', val: `$${c.required_margin_est.toFixed(0)}` },
+                { label: 'Аннуал. доход на маржу', val: `${c.annualized_yield_on_margin.toFixed(0)}%/год` },
+                { label: 'Тета (за контракт/день)', val: `+$${Math.abs(c.theta * 100).toFixed(2)}` },
+              ].map(row => (
+                <div key={row.label} className="flex justify-between border-b border-gray-700/30 py-1">
+                  <span className="text-gray-400">{row.label}</span>
+                  <span className="text-white font-medium">{row.val}</span>
+                </div>
+              ))}
+            </div>
+            <div className="bg-gray-800/40 rounded-lg p-3 text-xs text-gray-400 leading-relaxed">
+              <span className="text-gray-300 font-semibold">Логика сетапа: </span>
+              Продажа {c.option_type === 'call' ? 'колла' : 'пута'} на страйк ${c.strike} при
+              IV Rank {c.iv_rank?.toFixed(0)}/100 — вы продаёте переоценённую волатильность.
+              Максимальная прибыль ${c.max_profit.toFixed(0)}/контр. если акция к экспирации
+              останется {c.option_type === 'call' ? `ниже $${c.strike}` : `выше $${c.strike}`}.
+              Безубыток при движении {c.breakeven_move_pct > 0 ? '+' : ''}{c.breakeven_move_pct.toFixed(1)}% до ${c.breakeven.toFixed(2)}.
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Naked Ticker Section ───────────────────────────────────────────────────────
+
+function NakedTickerSection({ result }: { result: NakedTickerResult }) {
+  const [collapsed, setCollapsed] = useState(false)
+  const bestScore = result.candidates[0]?.naked_score ?? 0
+  const scoreColor_ = bestScore >= 70 ? 'text-green-400' : bestScore >= 50 ? 'text-yellow-400' : 'text-orange-400'
+
+  return (
+    <div className="card space-y-3">
+      <div
+        className="flex items-center justify-between cursor-pointer"
+        onClick={() => setCollapsed(c => !c)}
+      >
+        <div className="flex items-center gap-4">
+          <div>
+            <span className="text-xl font-bold text-white">{result.ticker}</span>
+            {result.current_price > 0 && (
+              <span className="text-gray-400 ml-3 font-mono">${result.current_price.toFixed(2)}</span>
+            )}
+          </div>
+          <div className="flex gap-2 text-xs flex-wrap">
+            {result.iv_rank != null && (
+              <span className={`px-2 py-0.5 rounded ${result.iv_rank >= 50 ? 'bg-yellow-500/15 text-yellow-400' : result.iv_rank >= 40 ? 'bg-orange-500/15 text-orange-400' : 'bg-gray-700 text-gray-400'}`}>
+                IV Rank {result.iv_rank.toFixed(0)}
+              </span>
+            )}
+            {result.hv_30 != null && (
+              <span className="px-2 py-0.5 rounded bg-gray-700 text-gray-300">
+                HV30 {(result.hv_30 * 100).toFixed(1)}%
+              </span>
+            )}
+            {result.candidates.length > 0 && (
+              <span className="px-2 py-0.5 rounded bg-gray-700 text-gray-300">
+                {result.candidates.length} кандидата
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {result.candidates.length > 0 && (
+            <div className={`text-lg font-bold ${scoreColor_}`}>{bestScore.toFixed(0)}</div>
+          )}
+          <span className="text-gray-500 text-sm">{collapsed ? '▼' : '▲'}</span>
+        </div>
+      </div>
+
+      {result.error && (
+        <div className="text-red-400 text-sm bg-red-900/20 rounded-lg p-3">Ошибка: {result.error}</div>
+      )}
+
+      {result.skipped_reason && !result.error && (
+        <div className="text-gray-500 text-sm bg-gray-800/40 rounded-lg p-3 flex items-center gap-2">
+          <span className="text-gray-600">⊘</span> {result.skipped_reason}
+        </div>
+      )}
+
+      {!collapsed && !result.skipped_reason && result.candidates.length === 0 && !result.error && (
+        <div className="text-gray-500 text-sm text-center py-4">
+          Нет подходящих кандидатов по заданным фильтрам
+        </div>
+      )}
+
+      {!collapsed && result.candidates.map((c, i) => (
+        <NakedCandidateCard key={i} c={c} />
+      ))}
+    </div>
+  )
+}
+
+// ── Naked Scanner Tab ──────────────────────────────────────────────────────────
+
+function NakedScannerTab() {
+  const [tickerInput, setTickerInput] = useState('')
+  const [selectedTickers, setSelectedTickers] = useState<string[]>([])
+  const [minIvRank, setMinIvRank] = useState(40)
+  const [minDte, setMinDte] = useState(25)
+  const [maxDte, setMaxDte] = useState(50)
+  const [optionType, setOptionType] = useState('both')
+  const [loading, setLoading] = useState(false)
+  const [results, setResults] = useState<NakedTickerResult[] | null>(null)
+  const [totalCandidates, setTotalCandidates] = useState(0)
+  const [error, setError] = useState<string | null>(null)
+  const [scanTime, setScanTime] = useState<number | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const addTicker = (raw: string) => {
+    const tickers = raw.toUpperCase().split(/[\s,;]+/).map(t => t.trim()).filter(t => /^[A-Z]{1,5}$/.test(t))
+    setSelectedTickers(prev => [...new Set([...prev, ...tickers])].slice(0, 20))
+    setTickerInput('')
+    inputRef.current?.focus()
+  }
+
+  const handleScan = async () => {
+    if (selectedTickers.length === 0) return
+    setLoading(true)
+    setError(null)
+    setResults(null)
+    const t0 = Date.now()
+    try {
+      const res = await runNakedScan({
+        tickers: selectedTickers,
+        min_dte: minDte,
+        max_dte: maxDte,
+        min_iv_rank: minIvRank,
+        option_type: optionType,
+      })
+      setResults(res.results)
+      setTotalCandidates(res.total_candidates)
+      setScanTime(Date.now() - t0)
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || e?.message || 'Ошибка сканирования')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const inputCls = 'w-full bg-gray-800 text-white rounded-lg px-3 py-2 text-sm border border-gray-700 focus:outline-none focus:border-blue-500'
+
+  return (
+    <div className="space-y-6">
+      {/* Risk disclosure */}
+      <div className="bg-red-900/20 border border-red-700/30 rounded-xl p-4 text-sm text-red-300 space-y-1">
+        <div className="font-semibold text-red-400">Внимание: непокрытые (naked) опционы</div>
+        <div className="text-xs leading-relaxed text-red-400/80">
+          Short call — <strong>неограниченный убыток</strong> при резком росте акции. Short put — убыток до нуля акции.
+          Эти стратегии требуют опыта, достаточного маржинального счёта и строгого риск-менеджмента.
+          Сканер показывает кандидатов с высоким IV Rank — вы продаёте переоценённую волатильность.
+        </div>
+      </div>
+
+      {/* Config */}
+      <div className="card space-y-4">
+        {/* Watchlist presets */}
+        <div>
+          <div className="text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wide">Вочлисты</div>
+          <div className="flex gap-2 flex-wrap">
+            {Object.entries(WATCHLISTS).map(([name, tickers]) => (
+              <button key={name} onClick={() => setSelectedTickers(tickers)}
+                className="px-3 py-1.5 text-xs rounded-lg bg-gray-800 text-gray-300 hover:bg-gray-700 hover:text-white transition-colors border border-gray-700">
+                {name}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Ticker input */}
+        <div>
+          <div className="text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wide">Тикеры</div>
+          <div className="flex gap-2">
+            <input ref={inputRef} value={tickerInput} onChange={e => setTickerInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); if (tickerInput.trim()) addTicker(tickerInput) } }}
+              placeholder="AAPL, TSLA, SPY..." className="flex-1 bg-gray-800 text-white rounded-lg px-3 py-2 text-sm border border-gray-700 focus:outline-none focus:border-blue-500" />
+            <button onClick={() => tickerInput.trim() && addTicker(tickerInput)} className="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors">Добавить</button>
+          </div>
+          {selectedTickers.length > 0 && (
+            <div className="flex gap-2 flex-wrap mt-2">
+              {selectedTickers.map(t => (
+                <span key={t} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-600/20 border border-blue-500/30 text-blue-300 text-xs">
+                  {t}
+                  <button onClick={() => setSelectedTickers(p => p.filter(x => x !== t))} className="hover:text-white ml-0.5">×</button>
+                </span>
+              ))}
+              <button onClick={() => setSelectedTickers([])} className="text-xs text-gray-500 hover:text-gray-300">Очистить</button>
+            </div>
+          )}
+        </div>
+
+        {/* Filters */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <div>
+            <label className="text-xs text-gray-400 font-semibold uppercase tracking-wide block mb-1">Тип опциона</label>
+            <select value={optionType} onChange={e => setOptionType(e.target.value)} className={inputCls}>
+              <option value="both">Коллы и путы</option>
+              <option value="calls">Только коллы</option>
+              <option value="puts">Только путы</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-gray-400 font-semibold uppercase tracking-wide block mb-1">Min IV Rank</label>
+            <input type="number" value={minIvRank} onChange={e => setMinIvRank(Number(e.target.value))} min={0} max={100} className={inputCls} />
+          </div>
+          <div>
+            <label className="text-xs text-gray-400 font-semibold uppercase tracking-wide block mb-1">DTE мин.</label>
+            <input type="number" value={minDte} onChange={e => setMinDte(Number(e.target.value))} min={1} className={inputCls} />
+          </div>
+          <div>
+            <label className="text-xs text-gray-400 font-semibold uppercase tracking-wide block mb-1">DTE макс.</label>
+            <input type="number" value={maxDte} onChange={e => setMaxDte(Number(e.target.value))} min={1} className={inputCls} />
+          </div>
+        </div>
+
+        <button onClick={handleScan} disabled={loading || selectedTickers.length === 0}
+          className="w-full py-3 rounded-xl bg-red-700 hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold transition-colors flex items-center justify-center gap-3">
+          {loading ? (
+            <><svg className="animate-spin h-5 w-5" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Сканирование...</>
+          ) : (
+            <><span>⚡</span>Найти кандидатов для непокрытых ({selectedTickers.length > 0 ? `${selectedTickers.length} тик.` : ''})</>
+          )}
+        </button>
+      </div>
+
+      {error && <div className="bg-red-900/20 border border-red-700/40 rounded-xl p-4 text-red-300 text-sm">{error}</div>}
+
+      {results !== null && (
+        <div className="flex items-center justify-between text-sm text-gray-400">
+          <span>
+            Найдено <span className="text-white font-semibold">{totalCandidates}</span> кандидатов
+            по <span className="text-white font-semibold">{results.length}</span> тикерам
+          </span>
+          {scanTime !== null && <span>за {(scanTime / 1000).toFixed(1)}с</span>}
+        </div>
+      )}
+
+      {results !== null && (
+        <div className="space-y-4">
+          {results
+            .slice()
+            .sort((a, b) => (b.candidates[0]?.naked_score ?? -1) - (a.candidates[0]?.naked_score ?? -1))
+            .map((result, i) => <NakedTickerSection key={i} result={result} />)}
+        </div>
+      )}
+
+      {results === null && !loading && (
+        <div className="text-center py-16 text-gray-600">
+          <div className="text-5xl mb-4">⚡</div>
+          <h2 className="text-xl font-semibold text-gray-500 mb-2">Сканер непокрытых опционов</h2>
+          <p className="text-sm max-w-md mx-auto">
+            Находит OTM опционы с высоким IV Rank (≥ {minIvRank}) для продажи без покрытия.
+            Фокус: дельта 0.12–0.35, нет отчётности в DTE, хорошая ликвидность.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main Scanner Page ──────────────────────────────────────────────────────────
 
 export default function Scanner() {
+  const [activeTab, setActiveTab] = useState<'standard' | 'naked'>('standard')
   const [tickerInput, setTickerInput] = useState('')
   const [selectedTickers, setSelectedTickers] = useState<string[]>([])
   const [strategy, setStrategy] = useState('any')
@@ -510,6 +877,37 @@ export default function Scanner() {
           и прогнозом прибыли.
         </p>
       </div>
+
+      {/* Mode tabs */}
+      <div className="flex gap-1 bg-gray-800/60 rounded-xl p-1 border border-gray-700/40 w-fit">
+        {([
+          { id: 'standard', label: 'Стандартный сканер', desc: 'Все стратегии' },
+          { id: 'naked', label: 'Непокрытые опционы', desc: 'Short без покрытия' },
+        ] as const).map(t => (
+          <button
+            key={t.id}
+            onClick={() => setActiveTab(t.id)}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              activeTab === t.id
+                ? t.id === 'naked'
+                  ? 'bg-red-700 text-white'
+                  : 'bg-blue-600 text-white'
+                : 'text-gray-400 hover:text-gray-200'
+            }`}
+          >
+            {t.label}
+            <span className={`ml-1.5 text-xs ${activeTab === t.id ? 'opacity-70' : 'opacity-40'}`}>
+              {t.desc}
+            </span>
+          </button>
+        ))}
+      </div>
+
+      {/* Naked scanner tab */}
+      {activeTab === 'naked' && <NakedScannerTab />}
+
+      {/* Standard scanner — hidden when naked tab active */}
+      {activeTab !== 'naked' && <>
 
       {/* Config panel */}
       <div className="card space-y-4">
@@ -698,6 +1096,8 @@ export default function Scanner() {
           </div>
         </div>
       )}
+
+      </>}
     </div>
   )
 }

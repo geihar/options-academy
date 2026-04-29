@@ -80,6 +80,8 @@ class OptionPosition(Base):
     closed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     is_covered = Column(Boolean, default=False)      # covered call / cash-secured put
+    shares_held = Column(Integer, nullable=True)     # shares owned for covered call
+    stock_cost_basis = Column(Float, nullable=True)  # avg cost basis per share
     # Trade Journal fields
     trade_result = Column(String, nullable=True)    # "win" | "loss" | "breakeven"
     outcome_notes = Column(Text, nullable=True)     # post-trade reflection
@@ -96,3 +98,16 @@ def get_db():
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    _migrate_db()
+
+
+def _migrate_db():
+    """Add new columns to existing tables without dropping data."""
+    from sqlalchemy import text, inspect as sa_inspect
+    with engine.connect() as conn:
+        cols = {c["name"] for c in sa_inspect(engine).get_columns("option_positions")}
+        if "shares_held" not in cols:
+            conn.execute(text("ALTER TABLE option_positions ADD COLUMN shares_held INTEGER"))
+        if "stock_cost_basis" not in cols:
+            conn.execute(text("ALTER TABLE option_positions ADD COLUMN stock_cost_basis REAL"))
+        conn.commit()

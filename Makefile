@@ -4,7 +4,7 @@ dev:
 	make -j2 backend frontend
 
 backend:
-	cd backend && uvicorn main:app --reload --port 8765
+	cd backend && uvicorn main:app --reload --port 3001
 
 frontend:
 	cd frontend && npm run dev

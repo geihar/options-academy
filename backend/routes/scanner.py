@@ -6,8 +6,12 @@ from database import get_db
 from data.fetcher import DataFetcher
 from data.cache import cache
 from analytics.iv_calculator import compute_iv_stats
-from analytics.scanner_engine import scan_ticker_options
-from schemas import ScanRequest, ScanResponse, ScanTickerResult, ScannerCandidateSchema, ChapterSignalSchema, ProfitForecastSchema, EvidenceItemSchema
+from analytics.scanner_engine import scan_ticker_options, scan_naked_options
+from schemas import (
+    ScanRequest, ScanResponse, ScanTickerResult, ScannerCandidateSchema,
+    ChapterSignalSchema, ProfitForecastSchema, EvidenceItemSchema,
+    NakedScanRequest, NakedScanResponse, NakedTickerResult, NakedCandidateSchema,
+)
 from config import settings
 
 router = APIRouter()
@@ -152,3 +156,94 @@ def scan_options(req: ScanRequest, db: Session = Depends(get_db)):
             ))
 
     return ScanResponse(total_candidates=total_candidates, results=results)
+
+
+@router.post("/naked-scan", response_model=NakedScanResponse)
+def scan_naked_options_endpoint(req: NakedScanRequest, db: Session = Depends(get_db)):
+    """
+    Scan tickers for naked (uncovered) short option candidates.
+    Pre-filters by IV Rank, then finds OTM options with attractive premium/risk ratio.
+    """
+    tickers = [t.upper().strip() for t in req.tickers if t.strip()]
+    results: list[NakedTickerResult] = []
+    total_candidates = 0
+
+    for ticker in tickers:
+        try:
+            cache_key_hist = f"hist_iv:{ticker}"
+            iv_stats = cache.get(cache_key_hist, db)
+            if iv_stats is None:
+                hist_prices = fetcher.get_historical_prices(ticker, days=252)
+                iv_stats = compute_iv_stats(hist_prices) if hist_prices else {}
+                cache.set(cache_key_hist, iv_stats, db, ttl_seconds=settings.cache_ttl)
+
+            cache_key_price = f"stock_price:{ticker}"
+            current_price = cache.get(cache_key_price, db)
+            if current_price is None:
+                current_price = fetcher.get_current_price(ticker) or 0
+                cache.set(cache_key_price, current_price, db, ttl_seconds=300)
+
+            candidates, skipped_reason = scan_naked_options(
+                ticker=ticker,
+                fetcher=fetcher,
+                iv_stats=iv_stats,
+                min_iv_rank=req.min_iv_rank,
+                option_type_filter=req.option_type,
+                min_dte=req.min_dte,
+                max_dte=req.max_dte,
+                min_volume=req.min_volume,
+                min_open_interest=req.min_open_interest,
+                r=settings.risk_free_rate,
+            )
+
+            schema_candidates = [
+                NakedCandidateSchema(
+                    ticker=c.ticker,
+                    current_price=c.current_price,
+                    strike=c.strike,
+                    expiry=c.expiry,
+                    option_type=c.option_type,
+                    days_to_expiry=c.days_to_expiry,
+                    market_price=c.market_price,
+                    bid=c.bid,
+                    ask=c.ask,
+                    volume=c.volume,
+                    open_interest=c.open_interest,
+                    iv=c.iv,
+                    delta=c.delta,
+                    theta=c.theta,
+                    iv_rank=c.iv_rank,
+                    annualized_yield=c.annualized_yield,
+                    annualized_yield_on_margin=c.annualized_yield_on_margin,
+                    required_margin_est=c.required_margin_est,
+                    max_profit=c.max_profit,
+                    breakeven=c.breakeven,
+                    breakeven_move_pct=c.breakeven_move_pct,
+                    days_to_earnings=c.days_to_earnings,
+                    risk_factors=c.risk_factors,
+                    naked_score=c.naked_score,
+                    quality=c.quality,
+                )
+                for c in candidates
+            ]
+
+            total_candidates += len(schema_candidates)
+            results.append(NakedTickerResult(
+                ticker=ticker,
+                current_price=round(current_price, 2),
+                iv_rank=iv_stats.get("iv_rank"),
+                hv_30=iv_stats.get("hv_30"),
+                candidates=schema_candidates,
+                skipped_reason=skipped_reason,
+            ))
+
+        except Exception as e:
+            logger.error(f"Naked scan error for {ticker}: {e}", exc_info=True)
+            results.append(NakedTickerResult(
+                ticker=ticker,
+                current_price=0,
+                candidates=[],
+                error=str(e),
+            ))
+
+    return NakedScanResponse(total_candidates=total_candidates, results=results)

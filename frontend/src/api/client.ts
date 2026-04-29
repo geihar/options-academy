@@ -150,6 +150,8 @@ export interface Position {
   notes: string | null
   status: string
   is_covered: boolean
+  shares_held: number | null
+  stock_cost_basis: number | null
   close_price: number | null
   realized_pnl: number | null
   pnl: PositionPnL | null
@@ -170,6 +172,8 @@ export async function addPosition(params: {
   entry_date: string
   notes?: string
   is_covered?: boolean
+  shares_held?: number
+  stock_cost_basis?: number
 }): Promise<Position> {
   const res = await apiClient.post<Position>('/api/positions', params)
   return res.data
@@ -348,6 +352,64 @@ export async function runScan(params: {
   strategies?: string[]
 }): Promise<ScanResponse> {
   const res = await apiClient.post<ScanResponse>('/api/scan', params)
+  return res.data
+}
+
+// ── Naked scanner types ───────────────────────────────────────────────────────
+
+export interface NakedCandidate {
+  ticker: string
+  current_price: number
+  strike: number
+  expiry: string
+  option_type: string
+  days_to_expiry: number
+  market_price: number
+  bid: number
+  ask: number
+  volume: number
+  open_interest: number
+  iv: number
+  delta: number
+  theta: number
+  iv_rank: number | null
+  annualized_yield: number
+  annualized_yield_on_margin: number
+  required_margin_est: number
+  max_profit: number
+  breakeven: number
+  breakeven_move_pct: number
+  days_to_earnings: number | null
+  risk_factors: string[]
+  naked_score: number
+  quality: string
+}
+
+export interface NakedTickerResult {
+  ticker: string
+  current_price: number
+  iv_rank: number | null
+  hv_30: number | null
+  candidates: NakedCandidate[]
+  error: string | null
+  skipped_reason: string | null
+}
+
+export interface NakedScanResponse {
+  total_candidates: number
+  results: NakedTickerResult[]
+}
+
+export async function runNakedScan(params: {
+  tickers: string[]
+  min_dte?: number
+  max_dte?: number
+  min_iv_rank?: number
+  option_type?: string
+  min_volume?: number
+  min_open_interest?: number
+}): Promise<NakedScanResponse> {
+  const res = await apiClient.post<NakedScanResponse>('/api/naked-scan', params)
   return res.data
 }
 

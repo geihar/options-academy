@@ -162,6 +162,8 @@ def _to_schema(pos: OptionPosition, db: Session, include_pnl: bool = True) -> Po
         notes=pos.notes,
         status=pos.status,
         is_covered=bool(pos.is_covered),
+        shares_held=pos.shares_held,
+        stock_cost_basis=pos.stock_cost_basis,
         close_price=pos.close_price,
         realized_pnl=realized,
         pnl=pnl,
@@ -187,6 +189,8 @@ def add_position(req: PositionAddRequest, db: Session = Depends(get_db)):
         entry_date=req.entry_date,
         notes=req.notes,
         is_covered=req.is_covered,
+        shares_held=req.shares_held if req.is_covered else None,
+        stock_cost_basis=req.stock_cost_basis if req.is_covered else None,
     )
     db.add(pos)
     db.commit()

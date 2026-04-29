@@ -247,7 +247,9 @@ class PositionAddRequest(BaseModel):
     entry_price: float
     entry_date: str         # ISO date
     notes: Optional[str] = None
-    is_covered: bool = False  # covered call / cash-secured put
+    is_covered: bool = False         # covered call / cash-secured put
+    shares_held: Optional[int] = None        # shares owned (for covered call)
+    stock_cost_basis: Optional[float] = None  # avg cost basis per share
 
 
 class PositionCloseRequest(BaseModel):
@@ -286,6 +288,8 @@ class PositionSchema(BaseModel):
     notes: Optional[str] = None
     status: str
     is_covered: bool = False
+    shares_held: Optional[int] = None
+    stock_cost_basis: Optional[float] = None
     close_price: Optional[float] = None
     realized_pnl: Optional[float] = None
     pnl: Optional[PositionPnL] = None
@@ -390,3 +394,60 @@ class ScanTickerResult(BaseModel):
 class ScanResponse(BaseModel):
     total_candidates: int
     results: List[ScanTickerResult]
+
+
+# ---------------------------------------------------------------------------
+# Naked (uncovered) options scanner schemas
+# ---------------------------------------------------------------------------
+
+class NakedScanRequest(BaseModel):
+    tickers: List[str] = Field(..., min_length=1, max_length=20)
+    min_dte: int = Field(default=25)
+    max_dte: int = Field(default=50)
+    min_iv_rank: float = Field(default=40.0, description="Minimum IV Rank to filter tickers")
+    option_type: str = Field(default="both", description="'calls', 'puts', or 'both'")
+    min_volume: int = Field(default=5)
+    min_open_interest: int = Field(default=30)
+
+
+class NakedCandidateSchema(BaseModel):
+    ticker: str
+    current_price: float
+    strike: float
+    expiry: str
+    option_type: str
+    days_to_expiry: int
+    market_price: float
+    bid: float
+    ask: float
+    volume: int
+    open_interest: int
+    iv: float
+    delta: float
+    theta: float
+    iv_rank: Optional[float] = None
+    annualized_yield: float          # % annual return on premium vs stock price
+    annualized_yield_on_margin: float  # % annual return on margin
+    required_margin_est: float       # estimated margin per contract ($)
+    max_profit: float                # premium collected per contract
+    breakeven: float                 # stock price at breakeven
+    breakeven_move_pct: float        # % move needed to hit breakeven (negative = against)
+    days_to_earnings: Optional[int] = None
+    risk_factors: List[str]
+    naked_score: float               # 0-100
+    quality: str
+
+
+class NakedTickerResult(BaseModel):
+    ticker: str
+    current_price: float
+    iv_rank: Optional[float] = None
+    hv_30: Optional[float] = None
+    candidates: List[NakedCandidateSchema]
+    error: Optional[str] = None
+    skipped_reason: Optional[str] = None  # why ticker was skipped (e.g., low IV rank)
+
+
+class NakedScanResponse(BaseModel):
+    total_candidates: int
+    results: List[NakedTickerResult]
