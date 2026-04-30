@@ -1,5 +1,6 @@
-import { useState, useRef } from 'react'
-import { runScan, runNakedScan, fetchScannerUniverse, ScannerCandidate, ScanTickerResult, ChapterSignal, EvidenceItem, NakedCandidate, NakedTickerResult, ScannerUniverseItem, ScannerUniverseResponse } from '../api/client'
+import { useState, useRef, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { runScan, runNakedScan, fetchScannerUniverse, runUniverseScan, fetchTickerUniverse, ScannerCandidate, ScanTickerResult, ChapterSignal, EvidenceItem, NakedCandidate, NakedTickerResult, ScannerUniverseItem, ScannerUniverseResponse, QuickScanResult, UniverseScanResponse } from '../api/client'
 
 // ── Preset watchlists ──────────────────────────────────────────────────────────
 const WATCHLISTS: Record<string, string[]> = {
@@ -679,7 +680,8 @@ function NakedScannerTab() {
       setTotalCandidates(res.total_candidates)
       setScanTime(Date.now() - t0)
     } catch (e: any) {
-      setError(e?.response?.data?.detail || e?.message || 'Ошибка сканирования')
+      const d = e?.response?.data?.detail
+      setError((Array.isArray(d) ? d[0]?.msg : d) || e?.message || 'Ошибка сканирования')
     } finally {
       setLoading(false)
     }
@@ -804,6 +806,237 @@ function NakedScannerTab() {
           <p className="text-sm max-w-md mx-auto">
             Находит OTM опционы с высоким IV Rank (≥ {minIvRank}) для продажи без покрытия.
             Фокус: дельта 0.12–0.35, нет отчётности в DTE, хорошая ликвидность.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Universe Scanner Tab ───────────────────────────────────────────────────────
+
+const SCAN_PRESETS = [
+  { label: '⚡ Быстро',    max: 50,  desc: '~15 сек' },
+  { label: '📊 Стандарт', max: 150, desc: '~40 сек' },
+  { label: '🌐 Полный',   max: 500, desc: '~2-3 мин' },
+]
+
+const SIGNAL_FILTERS = [
+  { value: 'all',          label: 'Все сигналы' },
+  { value: 'sell_premium', label: '🟠 Продажа премии (IV высокий)' },
+  { value: 'buy_options',  label: '🟢 Покупка опционов (IV низкий)' },
+]
+
+function signalBadge(type: string, strength: number) {
+  if (type === 'sell_premium') return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-orange-500/20 border border-orange-500/30 text-orange-300">
+      Продай премию {strength.toFixed(0)}
+    </span>
+  )
+  if (type === 'buy_options') return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-500/20 border border-green-500/30 text-green-300">
+      Купи опцион {strength.toFixed(0)}
+    </span>
+  )
+  return (
+    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-gray-700 text-gray-400">
+      Нейтральный
+    </span>
+  )
+}
+
+function UniverseScannerTab() {
+  const navigate = useNavigate()
+  const [universeInfo, setUniverseInfo] = useState<{ source: string; total: number } | null>(null)
+  const [maxTickers, setMaxTickers] = useState(150)
+  const [signalFilter, setSignalFilter] = useState<'all' | 'sell_premium' | 'buy_options'>('all')
+  const [loading, setLoading] = useState(false)
+  const [results, setResults] = useState<UniverseScanResponse | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [sortCol, setSortCol] = useState<'signal_strength' | 'iv_rank' | 'ticker'>('signal_strength')
+  const [sortDir, setSortDir] = useState<'desc' | 'asc'>('desc')
+
+  // Load universe info on mount
+  useEffect(() => {
+    fetchTickerUniverse()
+      .then(info => setUniverseInfo({ source: info.source, total: info.total }))
+      .catch(() => setUniverseInfo({ source: 'fallback', total: 60 }))
+  }, [])
+
+  const handleScan = async () => {
+    setLoading(true)
+    setError(null)
+    setResults(null)
+    try {
+      const res = await runUniverseScan({ max_tickers: maxTickers, signal_filter: signalFilter, max_workers: 8 })
+      setResults(res)
+    } catch (e: any) {
+      const d = e?.response?.data?.detail
+      setError((Array.isArray(d) ? d[0]?.msg : d) || e?.message || 'Ошибка сканирования вселенной')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const sortedResults = results
+    ? [...results.results].sort((a, b) => {
+        let av: number | string, bv: number | string
+        if (sortCol === 'ticker')          { av = a.ticker; bv = b.ticker }
+        else if (sortCol === 'iv_rank')    { av = a.iv_rank ?? -1; bv = b.iv_rank ?? -1 }
+        else                               { av = a.signal_strength; bv = b.signal_strength }
+        if (sortDir === 'desc') return bv > av ? 1 : -1
+        return av > bv ? 1 : -1
+      })
+    : []
+
+  const toggleSort = (col: typeof sortCol) => {
+    if (sortCol === col) setSortDir(d => d === 'desc' ? 'asc' : 'desc')
+    else { setSortCol(col); setSortDir('desc') }
+  }
+
+  const SortIcon = ({ col }: { col: typeof sortCol }) =>
+    sortCol === col ? <span className="ml-1 text-blue-400">{sortDir === 'desc' ? '↓' : '↑'}</span> : <span className="ml-1 text-gray-600">↕</span>
+
+  return (
+    <div className="space-y-5">
+      {/* Universe info banner */}
+      <div className="bg-blue-500/8 border border-blue-500/20 rounded-xl p-4 flex items-start gap-3">
+        <span className="text-2xl shrink-0">🌐</span>
+        <div className="text-sm space-y-0.5">
+          <div className="text-blue-300 font-semibold">
+            Вселенная тикеров
+            {universeInfo && (
+              <span className="ml-2 px-2 py-0.5 rounded text-xs bg-blue-500/20 border border-blue-500/30">
+                {universeInfo.total} тикеров · {universeInfo.source === 'wikipedia_sp500' ? 'S&P 500 + NDX' : 'fallback список'}
+              </span>
+            )}
+          </div>
+          <div className="text-gray-400 text-xs">
+            Лёгкое сканирование: только цена и HV30 (без цепочки опционов). Нашли сигнал → используйте Стандартный сканер для глубокого анализа.
+          </div>
+        </div>
+      </div>
+
+      {/* Controls */}
+      <div className="card space-y-4">
+        <div>
+          <div className="text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wide">Количество тикеров</div>
+          <div className="flex gap-2 flex-wrap">
+            {SCAN_PRESETS.map(p => (
+              <button key={p.max} onClick={() => setMaxTickers(p.max)}
+                className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${maxTickers === p.max ? 'bg-blue-600/25 border-blue-500/50 text-blue-200' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'}`}>
+                {p.label} <span className="text-xs opacity-60 ml-1">{p.desc}</span>
+              </button>
+            ))}
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500">или</span>
+              <input type="number" value={maxTickers} onChange={e => setMaxTickers(Math.max(1, Math.min(500, +e.target.value)))}
+                min={1} max={500}
+                className="w-20 bg-gray-800 text-white rounded-lg px-2 py-1.5 text-sm border border-gray-700 focus:outline-none focus:border-blue-500" />
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wide">Фильтр сигналов</div>
+          <div className="flex gap-2 flex-wrap">
+            {SIGNAL_FILTERS.map(f => (
+              <button key={f.value} onClick={() => setSignalFilter(f.value as any)}
+                className={`px-3 py-1.5 text-xs rounded-lg border font-medium transition-colors ${signalFilter === f.value ? 'bg-blue-600/25 border-blue-500/50 text-blue-200' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'}`}>
+                {f.label}
+              </button>
+            ))}
+          </div>
+          <div className="mt-2 text-xs text-gray-600">
+            IVR &gt; 50 = продай премию (Iron Condor, Covered Call). IVR &lt; 30 = покупай опционы (Long Call, Straddle).
+          </div>
+        </div>
+
+        <button onClick={handleScan} disabled={loading}
+          className="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold transition-colors flex items-center justify-center gap-3">
+          {loading ? (
+            <><svg className="animate-spin h-5 w-5" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Сканирование вселенной…</>
+          ) : (
+            <><span>🌐</span>Сканировать {maxTickers} тикеров</>
+          )}
+        </button>
+      </div>
+
+      {error && <div className="bg-red-900/20 border border-red-700/40 rounded-xl p-4 text-red-300 text-sm">{error}</div>}
+
+      {/* Results */}
+      {results && (
+        <>
+          <div className="flex items-center justify-between text-sm text-gray-400 flex-wrap gap-2">
+            <span>
+              Просканировано <span className="text-white font-semibold">{results.tickers_scanned}</span> тикеров ·
+              {' '}<span className="text-green-400 font-semibold">{results.signals_found} сигналов</span>
+              {results.errors > 0 && <span className="text-red-400"> · {results.errors} ошибок</span>}
+            </span>
+            <span className="text-gray-600">{results.scan_time_seconds}с · источник: {results.universe_source}</span>
+          </div>
+
+          <div className="overflow-x-auto rounded-xl border border-gray-700/50">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="bg-gray-800/80 border-b border-gray-700/50 text-gray-400">
+                  <th className="px-3 py-2.5 text-left cursor-pointer hover:text-white" onClick={() => toggleSort('ticker')}>Тикер <SortIcon col="ticker" /></th>
+                  <th className="px-3 py-2.5 text-right">Цена</th>
+                  <th className="px-3 py-2.5 text-right cursor-pointer hover:text-white" onClick={() => toggleSort('iv_rank')}>IV Rank <SortIcon col="iv_rank" /></th>
+                  <th className="px-3 py-2.5 text-right">HV30</th>
+                  <th className="px-3 py-2.5 text-center cursor-pointer hover:text-white" onClick={() => toggleSort('signal_strength')}>Сигнал <SortIcon col="signal_strength" /></th>
+                  <th className="px-3 py-2.5 text-center">Действие</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedResults.map(r => (
+                  <tr key={r.ticker} className={`border-b border-gray-700/25 hover:bg-gray-800/40 transition-colors ${r.error ? 'opacity-40' : ''}`}>
+                    <td className="px-3 py-2.5 font-bold text-white">{r.ticker}</td>
+                    <td className="px-3 py-2.5 text-right font-mono text-gray-300">{r.price > 0 ? `$${r.price.toFixed(2)}` : '—'}</td>
+                    <td className="px-3 py-2.5 text-right">
+                      {r.iv_rank != null ? (
+                        <span className={`font-semibold ${r.iv_rank > 50 ? 'text-orange-400' : r.iv_rank < 30 ? 'text-green-400' : 'text-gray-300'}`}>
+                          {r.iv_rank.toFixed(0)}
+                        </span>
+                      ) : <span className="text-gray-600">—</span>}
+                    </td>
+                    <td className="px-3 py-2.5 text-right text-gray-400">{r.hv_30 != null ? `${r.hv_30.toFixed(1)}%` : '—'}</td>
+                    <td className="px-3 py-2.5 text-center">
+                      {r.error ? <span className="text-red-500 text-xs">{r.error.slice(0, 30)}</span> : signalBadge(r.signal_type, r.signal_strength)}
+                    </td>
+                    <td className="px-3 py-2.5 text-center">
+                      {!r.error && r.iv_rank != null && (
+                        <button
+                          onClick={() => {
+                            // Estimate sigma from HV30; pass to simulator via URL
+                            const sigma = r.hv_30 ? (r.hv_30 / 100).toFixed(2) : '0.30'
+                            navigate(`/simulator?S=${r.price}&sigma=${sigma}&ticker=${r.ticker}&ivr=${r.iv_rank?.toFixed(0) ?? ''}`)
+                          }}
+                          className="px-2 py-1 text-xs rounded bg-blue-600/20 border border-blue-500/30 text-blue-300 hover:bg-blue-600/40 transition-colors whitespace-nowrap"
+                        >
+                          → Симулятор
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="text-xs text-gray-600 leading-relaxed">
+            IV Rank рассчитан из 52-недельного ряда HV30 как прокси. Для точного IV анализа используйте Стандартный сканер.
+          </div>
+        </>
+      )}
+
+      {!results && !loading && (
+        <div className="text-center py-16 text-gray-600">
+          <div className="text-5xl mb-4">🌐</div>
+          <h2 className="text-xl font-semibold text-gray-500 mb-2">Сканер вселенной</h2>
+          <p className="text-sm max-w-sm mx-auto">
+            Быстро находит тикеры с интересным IV окружением из всего S&P 500 + NDX 100.
+            Выберите размер скана и нажмите кнопку.
           </p>
         </div>
       )}
@@ -1006,7 +1239,7 @@ function ScannerUniversePicker({ onAdd }: { onAdd: (tickers: string[]) => void }
 // ── Main Scanner Page ──────────────────────────────────────────────────────────
 
 export default function Scanner() {
-  const [activeTab, setActiveTab] = useState<'standard' | 'naked'>('standard')
+  const [activeTab, setActiveTab] = useState<'standard' | 'naked' | 'universe'>('standard')
   const [tickerInput, setTickerInput] = useState('')
   const [selectedTickers, setSelectedTickers] = useState<string[]>([])
   const [strategy, setStrategy] = useState('any')
@@ -1059,7 +1292,8 @@ export default function Scanner() {
       setTotalCandidates(res.total_candidates)
       setScanTime(Date.now() - t0)
     } catch (e: any) {
-      setError(e?.response?.data?.detail || e?.message || 'Ошибка сканирования')
+      const d = e?.response?.data?.detail
+      setError((Array.isArray(d) ? d[0]?.msg : d) || e?.message || 'Ошибка сканирования')
     } finally {
       setLoading(false)
     }
@@ -1077,19 +1311,18 @@ export default function Scanner() {
       </div>
 
       {/* Mode tabs */}
-      <div className="flex gap-1 bg-gray-800/60 rounded-xl p-1 border border-gray-700/40 w-fit">
+      <div className="flex gap-1 bg-gray-800/60 rounded-xl p-1 border border-gray-700/40 w-fit flex-wrap">
         {([
-          { id: 'standard', label: 'Стандартный сканер', desc: 'Все стратегии' },
-          { id: 'naked', label: 'Непокрытые опционы', desc: 'Short без покрытия' },
+          { id: 'standard', label: 'Стандартный сканер', desc: 'Все стратегии', color: 'bg-blue-600' },
+          { id: 'naked', label: 'Непокрытые опционы', desc: 'Short без покрытия', color: 'bg-red-700' },
+          { id: 'universe', label: 'Вселенная', desc: 'S&P 500 / NASDAQ', color: 'bg-purple-600' },
         ] as const).map(t => (
           <button
             key={t.id}
             onClick={() => setActiveTab(t.id)}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
               activeTab === t.id
-                ? t.id === 'naked'
-                  ? 'bg-red-700 text-white'
-                  : 'bg-blue-600 text-white'
+                ? `${t.color} text-white`
                 : 'text-gray-400 hover:text-gray-200'
             }`}
           >
@@ -1101,11 +1334,14 @@ export default function Scanner() {
         ))}
       </div>
 
+      {/* Universe scanner tab */}
+      {activeTab === 'universe' && <UniverseScannerTab />}
+
       {/* Naked scanner tab */}
       {activeTab === 'naked' && <NakedScannerTab />}
 
-      {/* Standard scanner — hidden when naked tab active */}
-      {activeTab !== 'naked' && <>
+      {/* Standard scanner — hidden when naked or universe tab active */}
+      {activeTab === 'standard' && <>
 
       {/* Config panel */}
       <div className="card space-y-4">

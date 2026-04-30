@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from database import init_db
 from config import settings
-from routes import calculator, market_data, advisor, simulator, game, quiz, scanner, positions, market_history, squeeze
+from routes import calculator, market_data, advisor, simulator, game, quiz, scanner, positions, market_history, squeeze, universe_scanner
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -48,6 +48,7 @@ app.include_router(scanner.router, prefix="/api", tags=["Scanner"])
 app.include_router(positions.router, prefix="/api", tags=["Positions"])
 app.include_router(market_history.router, prefix="/api", tags=["Market History"])
 app.include_router(squeeze.router, prefix="/api", tags=["Squeeze"])
+app.include_router(universe_scanner.router, prefix="/api", tags=["Universe Scanner"])
 
 
 @app.get("/health")

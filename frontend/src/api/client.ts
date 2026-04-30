@@ -413,6 +413,118 @@ export async function runNakedScan(params: {
   return res.data
 }
 
+// ── Full universe scan (yfinance, concurrent) ────────────────────────────────
+
+export interface QuickScanResult {
+  ticker: string
+  price: number
+  hv_30: number | null
+  iv_rank: number | null
+  signal_type: 'sell_premium' | 'buy_options' | 'neutral'
+  signal_strength: number
+  error: string | null
+}
+
+export interface UniverseScanResponse {
+  results: QuickScanResult[]
+  scan_time_seconds: number
+  tickers_scanned: number
+  signals_found: number
+  errors: number
+  universe_source: string
+}
+
+export interface TickerUniverseInfo {
+  source: string
+  total: number
+  tickers: string[]
+}
+
+export async function fetchTickerUniverse(): Promise<TickerUniverseInfo> {
+  const res = await apiClient.get<TickerUniverseInfo>('/api/ticker-universe')
+  return res.data
+}
+
+export async function runUniverseScan(params: {
+  max_tickers: number
+  signal_filter: 'all' | 'sell_premium' | 'buy_options'
+  max_workers?: number
+}): Promise<UniverseScanResponse> {
+  const res = await apiClient.post<UniverseScanResponse>('/api/universe-scan', params, { timeout: 180_000 })
+  return res.data
+}
+
+// ── Strategy profiles & wizard ────────────────────────────────────────────────
+
+export interface StrategyLeg {
+  type: 'call' | 'put'
+  direction: 'long' | 'short'
+  offset_pct: number
+  premium_pct: number
+}
+
+export interface StrategyGreeks {
+  delta: string
+  gamma: string
+  theta: string
+  vega: string
+}
+
+export interface StrategyProfile {
+  id: string
+  name: string
+  name_ru: string
+  icon: string
+  outlook_tags: string[]
+  risk_type: 'defined' | 'open'
+  iv_pref: 'low' | 'high' | 'any'
+  is_advanced: boolean
+  max_profit_label: string
+  max_loss_label: string
+  breakeven_label: string
+  when_to_use: string
+  common_mistakes: string[]
+  greeks: StrategyGreeks
+  legs: StrategyLeg[]
+  warning: string
+}
+
+export interface WizardMatch extends StrategyProfile {
+  match_score: number
+  iv_warning: string | null
+  fit_reason: string
+}
+
+export interface WizardExcluded {
+  id: string
+  name: string
+  name_ru: string
+  icon: string
+  exclude_reason: string
+}
+
+export interface WizardResponse {
+  matched: WizardMatch[]
+  excluded: WizardExcluded[]
+  outlook: string
+  risk_type: string
+  iv_env: string
+}
+
+export async function fetchStrategies(): Promise<StrategyProfile[]> {
+  const res = await apiClient.get<{ strategies: StrategyProfile[] }>('/api/strategies')
+  return res.data.strategies
+}
+
+export async function runStrategyWizard(params: {
+  outlook: string
+  risk_type: string
+  iv_env: string
+}): Promise<WizardResponse> {
+  const res = await apiClient.post<WizardResponse>('/api/strategy-wizard', params)
+  return res.data
+}
+
 // ── Scanner universe (Finviz auto-discovery) ──────────────────────────────────
 
 export interface ScannerUniverseItem {

@@ -121,4 +121,59 @@ export function computePayoff(
   return result
 }
 
+export interface PayoffLeg {
+  type: 'call' | 'put'
+  direction: 'long' | 'short'
+  offset_pct: number   // strike = S × (1 + offset_pct/100), e.g. 0=ATM, 5=5% above, -5=5% below
+  premium_pct: number  // estimated premium = S × (premium_pct/100)
+}
+
+/**
+ * Compute combined at-expiry P&L for a multi-leg options strategy.
+ * Uses the leg offset/premium percentages from StrategyProfile to estimate payoff shape.
+ * This is an educational approximation — premiums are parametric, not live market data.
+ */
+export function computeMultiLegPayoff(
+  S: number,
+  legs: PayoffLeg[],
+  contracts: number = 1,
+): Array<{ stockPrice: number; pnl: number }> {
+  const S_min = S * 0.65
+  const S_max = S * 1.35
+  const steps = 80
+  const step = (S_max - S_min) / steps
+  const multiplier = 100 * contracts
+
+  const result = []
+  for (let i = 0; i <= steps; i++) {
+    const sp = S_min + i * step
+    let totalPnl = 0
+    for (const leg of legs) {
+      const K = S * (1 + leg.offset_pct / 100)
+      const premium = S * (leg.premium_pct / 100)
+      const intrinsic = leg.type === 'call'
+        ? Math.max(0, sp - K)
+        : Math.max(0, K - sp)
+      totalPnl += leg.direction === 'long'
+        ? (intrinsic - premium) * multiplier
+        : (premium - intrinsic) * multiplier
+    }
+    result.push({ stockPrice: parseFloat(sp.toFixed(2)), pnl: parseFloat(totalPnl.toFixed(2)) })
+  }
+  return result
+}
+
+/** Find stock prices where the payoff crosses zero (breakeven points). */
+export function findBreakevens(data: Array<{ stockPrice: number; pnl: number }>): number[] {
+  const bps: number[] = []
+  for (let i = 1; i < data.length; i++) {
+    const prev = data[i - 1], curr = data[i]
+    if ((prev.pnl < 0 && curr.pnl >= 0) || (prev.pnl >= 0 && curr.pnl < 0)) {
+      const t = -prev.pnl / (curr.pnl - prev.pnl)
+      bps.push(parseFloat((prev.stockPrice + t * (curr.stockPrice - prev.stockPrice)).toFixed(2)))
+    }
+  }
+  return bps
+}
+
 export { normalCDF }

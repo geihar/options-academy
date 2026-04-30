@@ -824,7 +824,8 @@ function AddPositionForm({ onAdded }: { onAdded: () => void }) {
       setForm(EMPTY_FORM)
       onAdded()
     } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Ошибка добавления позиции')
+      const d = e?.response?.data?.detail
+      setError((Array.isArray(d) ? d[0]?.msg : d) || e?.message || 'Ошибка добавления позиции')
     } finally {
       setLoading(false)
     }
