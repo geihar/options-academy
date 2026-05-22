@@ -74,7 +74,7 @@ function StrikeVisual({ S, type }: { S: number; type: 'call'|'put' }) {
 
   return (
     <div className="space-y-3">
-      <div className="text-xs text-gray-500 font-semibold uppercase tracking-wide">Карта страйков (текущая цена: ${S.toFixed(0)})</div>
+      <div className="text-xs text-gray-500 font-semibold uppercase tracking-wide">Карта страйков (текущая цена: ${S.toFixed(2)})</div>
       <div className="flex gap-1 items-stretch">
         {strikes.map((z, i) => {
           const K = S * (1 + (type==='call' ? z.pct : -z.pct) / 100)
@@ -82,7 +82,7 @@ function StrikeVisual({ S, type }: { S: number; type: 'call'|'put' }) {
           return (
             <div key={i} className={`flex-1 rounded-lg border text-center py-3 px-1 ${isATM ? 'border-yellow-500/60 bg-yellow-500/10' : 'border-gray-700/40 bg-gray-800/40'}`}>
               <div className="text-xs text-gray-500 mb-1 leading-tight">{z.label}</div>
-              <div className={`text-sm font-bold ${isATM ? 'text-yellow-400' : 'text-gray-300'}`}>${K.toFixed(0)}</div>
+              <div className={`text-sm font-bold ${isATM ? 'text-yellow-400' : 'text-gray-300'}`}>${K.toFixed(2)}</div>
             </div>
           )
         })}
@@ -267,14 +267,17 @@ function ThetaChart({ S, sigma, r }: { S: number; sigma: number; r: number }) {
 const EXPIRY_OPTIONS = [7, 14, 21, 30, 45, 60, 90]
 
 function ComparisonTool() {
-  const [S, setS] = useState(100)
+  const [sStr, setSStr] = useState('100')
+  const S = parseFloat(sStr) || 1
   const [ivPct, setIvPct] = useState(30)
   const [type, setType] = useState<'call'|'put'>('call')
+  const [direction, setDirection] = useState<'buy'|'sell'>('buy')
   const [forecastPct, setForecastPct] = useState(10)
   const [forecastDays, setForecastDays] = useState(30)
   const [selExp, setSelExp] = useState<number[]>([14, 30, 45])
   const r = 0.05
   const sigma = ivPct / 100
+  const isSell = direction === 'sell'
 
   const toggleExp = (d: number) => {
     setSelExp(prev => prev.includes(d)
@@ -282,37 +285,39 @@ function ComparisonTool() {
       : [...prev, d].sort((a,b)=>a-b).slice(0,4))
   }
 
-  // Strikes: ATM ± steps
   const strikeSteps = type === 'call'
     ? [-20, -15, -10, -7, -5, -3, 0, 3, 5, 7, 10, 15, 20, 30]
     : [-30, -20, -15, -10, -7, -5, 0, 3, 5, 7, 10, 15, 20]
 
-  const targetPrice = type==='call'
-    ? S * (1 + forecastPct/100)
-    : S * (1 - forecastPct/100)
+  // For sellers: show the "adverse" scenario — stock moves against them
+  // For call sellers: stock rises; for put sellers: stock falls (same direction as buyers)
+  const targetPrice = type === 'call'
+    ? S * (1 + forecastPct / 100)
+    : S * (1 - forecastPct / 100)
 
   const rows = useMemo(() => strikeSteps.map(pct => {
-    const K = parseFloat((S * (1 + pct/100)).toFixed(2))
-    const moneyness = pct
+    const K = parseFloat((S * (1 + pct / 100)).toFixed(2))
     const isATM = pct === 0
-    const isITM = type==='call' ? pct < 0 : pct > 0
+    const isITM = type === 'call' ? pct < 0 : pct > 0
     return {
-      K, moneyness, isATM, isITM,
+      K, moneyness: pct, isATM, isITM,
       cols: selExp.map(dte => {
         if (dte === 0) return null
         const entry = bsCalc(S, K, dte, r, sigma, type)
         const remainDTE = Math.max(0, dte - forecastDays)
         const exitBS = remainDTE > 0
           ? bsCalc(targetPrice, K, remainDTE, r, sigma, type)
-          : { price: type==='call' ? Math.max(targetPrice-K,0) : Math.max(K-targetPrice,0) }
-        const pnl = exitBS.price - entry.price
+          : { price: type === 'call' ? Math.max(targetPrice - K, 0) : Math.max(K - targetPrice, 0) }
+        // Buyer: paid entry.price, receives exitBS.price → pnl = exit - entry
+        // Seller: received entry.price, pays exitBS.price to close → pnl = entry - exit
+        const pnl = isSell ? entry.price - exitBS.price : exitBS.price - entry.price
         const pnlPct = entry.price > 0 ? (pnl / entry.price) * 100 : 0
         return { dte, entry, pnl, pnlPct }
       })
     }
-  }), [S, sigma, type, forecastPct, forecastDays, selExp, r])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [S, sigma, type, isSell, forecastPct, forecastDays, selExp, r])
 
-  // Find best P&L% among all profitable
   const bestPnlPct = Math.max(...rows.flatMap(r => r.cols.map(c => c ? c.pnlPct : -Infinity)))
   const bestAbsPnl = Math.max(...rows.flatMap(r => r.cols.map(c => c ? c.pnl : -Infinity)))
 
@@ -323,8 +328,8 @@ function ComparisonTool() {
       <div>
         <h2 className="text-lg font-semibold text-white mb-1">Интерактивный сравнитель</h2>
         <p className="text-sm text-gray-400">
-          Задай параметры акции и свой прогноз — таблица покажет P&L для каждого страйка и экспирации.
-          Зелёный = прибыль, красный = убыток при указанном движении.
+          Задай параметры акции и сценарий — таблица покажет P&L для каждого страйка и экспирации.
+          Переключай <strong className="text-white">Купить / Продать</strong> чтобы увидеть обе стороны сделки.
         </p>
       </div>
 
@@ -333,63 +338,104 @@ function ComparisonTool() {
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           <div>
             <label className="text-xs text-gray-400 font-semibold uppercase tracking-wide block mb-1">Цена акции ($)</label>
-            <input type="number" value={S} onChange={e=>setS(Math.max(1,+e.target.value))} min={1} className={inputCls} />
+            <input type="text" inputMode="decimal" value={sStr}
+              onChange={e => { if (/^[0-9]*\.?[0-9]*$/.test(e.target.value)) setSStr(e.target.value) }}
+              className={inputCls} />
           </div>
           <div>
             <label className="text-xs text-gray-400 font-semibold uppercase tracking-wide block mb-1">Волатильность IV (%)</label>
             <div className="flex items-center gap-2">
-              <input type="range" min={5} max={120} value={ivPct} onChange={e=>setIvPct(+e.target.value)} className="flex-1 accent-blue-500" />
+              <input type="range" min={5} max={120} value={ivPct} onChange={e => setIvPct(+e.target.value)} className="flex-1 accent-blue-500" />
               <span className="text-white text-sm font-bold w-10 text-right">{ivPct}%</span>
             </div>
           </div>
           <div>
             <label className="text-xs text-gray-400 font-semibold uppercase tracking-wide block mb-1">Тип опциона</label>
             <div className="flex rounded-lg overflow-hidden border border-gray-700">
-              {(['call','put'] as const).map(t => (
-                <button key={t} onClick={()=>setType(t)}
-                  className={`flex-1 py-2 text-sm font-medium transition-colors ${type===t ? (t==='call'?'bg-green-600 text-white':'bg-red-600 text-white') : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
-                  {t==='call' ? 'CALL ▲' : 'PUT ▼'}
+              {(['call', 'put'] as const).map(t => (
+                <button key={t} onClick={() => setType(t)}
+                  className={`flex-1 py-2 text-sm font-medium transition-colors ${type === t ? (t === 'call' ? 'bg-green-600 text-white' : 'bg-red-600 text-white') : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
+                  {t === 'call' ? 'CALL ▲' : 'PUT ▼'}
                 </button>
               ))}
             </div>
           </div>
           <div>
-            <label className="text-xs text-gray-400 font-semibold uppercase tracking-wide block mb-1">Сценарий</label>
-            <div className="text-xs text-gray-400 space-y-1.5">
-              <div className="flex items-center gap-2">
-                <span className="w-16">Движение:</span>
-                <input type="number" value={forecastPct} onChange={e=>setForecastPct(Math.max(0.1,+e.target.value))} min={0.1} max={200} step={0.5}
-                  className="flex-1 bg-gray-800 text-white rounded px-2 py-1 text-sm border border-gray-700 focus:outline-none focus:border-blue-500" />
-                <span>%</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="w-16">Дней:</span>
-                <input type="number" value={forecastDays} onChange={e=>setForecastDays(Math.max(1,+e.target.value))} min={1} max={365}
-                  className="flex-1 bg-gray-800 text-white rounded px-2 py-1 text-sm border border-gray-700 focus:outline-none focus:border-blue-500" />
-              </div>
+            <label className="text-xs text-gray-400 font-semibold uppercase tracking-wide block mb-1">Направление</label>
+            <div className="flex rounded-lg overflow-hidden border border-gray-700">
+              <button onClick={() => setDirection('buy')}
+                className={`flex-1 py-2 text-sm font-medium transition-colors ${!isSell ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
+                Купить
+              </button>
+              <button onClick={() => setDirection('sell')}
+                className={`flex-1 py-2 text-sm font-medium transition-colors ${isSell ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
+                Продать
+              </button>
             </div>
           </div>
         </div>
 
-        {/* Scenario summary */}
-        <div className={`rounded-xl px-4 py-3 text-sm flex items-center gap-3 ${type==='call'?'bg-green-500/10 border border-green-500/25':'bg-red-500/10 border border-red-500/25'}`}>
-          <span className="text-2xl">{type==='call'?'📈':'📉'}</span>
-          <div>
-            <span className="text-white font-semibold">Прогноз: </span>
-            <span className="text-gray-300">акция {type==='call'?'вырастет на':'упадёт на'} </span>
-            <span className={`font-bold ${type==='call'?'text-green-400':'text-red-400'}`}>{forecastPct}%</span>
-            <span className="text-gray-300"> → </span>
-            <span className="text-white font-bold">${targetPrice.toFixed(2)}</span>
-            <span className="text-gray-400"> за {forecastDays} дн.</span>
+        {/* Scenario inputs */}
+        <div className="flex flex-wrap gap-4 items-end">
+          <div className="text-xs text-gray-400 font-semibold uppercase tracking-wide self-center">
+            {isSell ? 'Сценарий риска:' : 'Сценарий прогноза:'}
+          </div>
+          <div className="flex items-center gap-2 text-xs text-gray-400">
+            <span>Движение акции:</span>
+            <input type="number" value={forecastPct} onChange={e => setForecastPct(Math.max(0.1, +e.target.value))} min={0.1} max={200} step={0.5}
+              className="w-20 bg-gray-800 text-white rounded px-2 py-1 text-sm border border-gray-700 focus:outline-none focus:border-blue-500" />
+            <span>%</span>
+          </div>
+          <div className="flex items-center gap-2 text-xs text-gray-400">
+            <span>Дней:</span>
+            <input type="number" value={forecastDays} onChange={e => setForecastDays(Math.max(1, +e.target.value))} min={1} max={365}
+              className="w-20 bg-gray-800 text-white rounded px-2 py-1 text-sm border border-gray-700 focus:outline-none focus:border-blue-500" />
           </div>
         </div>
+
+        {/* Scenario banner */}
+        {isSell ? (
+          <div className="rounded-xl px-4 py-3 text-sm flex items-center gap-3 bg-purple-500/10 border border-purple-500/25">
+            <span className="text-2xl">⚠️</span>
+            <div>
+              <span className="text-purple-300 font-semibold">Сценарий риска (продавец): </span>
+              <span className="text-gray-300">если акция {type === 'call' ? 'вырастет на' : 'упадёт на'} </span>
+              <span className="font-bold text-red-400">{forecastPct}%</span>
+              <span className="text-gray-300"> → </span>
+              <span className="text-white font-bold">${targetPrice.toFixed(2)}</span>
+              <span className="text-gray-400"> за {forecastDays} дн. — убытки в таблице ниже</span>
+            </div>
+          </div>
+        ) : (
+          <div className={`rounded-xl px-4 py-3 text-sm flex items-center gap-3 ${type === 'call' ? 'bg-green-500/10 border border-green-500/25' : 'bg-red-500/10 border border-red-500/25'}`}>
+            <span className="text-2xl">{type === 'call' ? '📈' : '📉'}</span>
+            <div>
+              <span className="text-white font-semibold">Прогноз: </span>
+              <span className="text-gray-300">акция {type === 'call' ? 'вырастет на' : 'упадёт на'} </span>
+              <span className={`font-bold ${type === 'call' ? 'text-green-400' : 'text-red-400'}`}>{forecastPct}%</span>
+              <span className="text-gray-300"> → </span>
+              <span className="text-white font-bold">${targetPrice.toFixed(2)}</span>
+              <span className="text-gray-400"> за {forecastDays} дн.</span>
+            </div>
+          </div>
+        )}
+
+        {/* Seller info box */}
+        {isSell && (
+          <div className="text-xs text-purple-300 bg-purple-500/8 border border-purple-500/20 rounded-xl px-4 py-3 leading-relaxed">
+            <strong>Механика продажи:</strong> вы получаете премию сразу (строка «Цена» = ваш доход).
+            Прибыль = если опцион теряет стоимость (тета работает на вас).
+            Убыток = если акция доходит до страйка и опцион растёт в цене.
+            Максимальная прибыль ограничена собранной премией, убыток — теоретически не ограничен (для голых позиций).
+          </div>
+        )}
 
         {/* Expiry selector */}
         <div>
           <div className="text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wide">Экспирации для сравнения (до 4)</div>
           <div className="flex gap-2 flex-wrap">
             {EXPIRY_OPTIONS.map(d => (
-              <button key={d} onClick={()=>toggleExp(d)}
+              <button key={d} onClick={() => toggleExp(d)}
                 className={`px-3 py-1.5 text-xs rounded-lg border font-medium transition-colors ${
                   selExp.includes(d) ? 'bg-blue-600/25 border-blue-500/50 text-blue-300' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'
                 }`}>
@@ -418,7 +464,9 @@ function ComparisonTool() {
               <th className="px-2 py-2 text-center text-gray-500 font-normal">Δ</th>
               {selExp.map(d => (
                 <>
-                  <th key={`${d}p`} className="px-2 py-2 text-center text-gray-500 font-normal border-l border-gray-700/30">Цена</th>
+                  <th key={`${d}p`} className="px-2 py-2 text-center text-gray-500 font-normal border-l border-gray-700/30">
+                    {isSell ? 'Премия' : 'Цена'}
+                  </th>
                   <th key={`${d}pl`} className="px-2 py-2 text-center text-gray-500 font-normal">P&L</th>
                 </>
               ))}
@@ -449,7 +497,7 @@ function ComparisonTool() {
                     return (
                       <>
                         <td key={`${ci}p`} className="px-2 py-2.5 text-center border-l border-gray-700/30">
-                          <div className="text-gray-200 font-medium">${fmtPrice(col.entry.price)}</div>
+                          <div className={`font-medium ${isSell ? 'text-purple-300' : 'text-gray-200'}`}>${fmtPrice(col.entry.price)}</div>
                           <div className="text-gray-500">Δ{fmtDelta(Math.abs(col.entry.delta))}</div>
                         </td>
                         <td key={`${ci}pl`} className="px-1.5 py-2.5 text-center">
@@ -483,28 +531,308 @@ function ComparisonTool() {
         <div className="bg-gray-800/50 border border-gray-700/40 rounded-xl p-4 space-y-2">
           <div className="text-white font-semibold">📊 Что показывает таблица</div>
           <ul className="text-gray-400 text-xs space-y-1.5 leading-relaxed">
-            <li>• <span className="text-green-400">Зелёный</span> = позиция в плюсе при твоём сценарии</li>
-            <li>• <span className="text-red-400">Красный</span> = убыток даже если прогноз сбылся (нужно больше движения)</li>
-            <li>• <span className="text-yellow-400">★ лучший %</span> = максимальный % доходности (но часто самый рискованный)</li>
+            <li>• <span className="text-green-400">Зелёный</span> = позиция в плюсе при этом сценарии</li>
+            <li>• <span className="text-red-400">Красный</span> = убыток при этом движении акции</li>
+            <li>• <span className="text-yellow-400">★ лучший %</span> = наилучшее соотношение P&L к затратам</li>
             <li>• <span className="text-blue-400">★ макс $</span> = максимальная абсолютная прибыль</li>
-            <li>• P&L считается <strong className="text-white">при достижении цели на день {forecastDays}</strong> и закрытии позиции</li>
+            <li>• P&L считается на <strong className="text-white">день {forecastDays}</strong> при закрытии позиции</li>
           </ul>
         </div>
-        <div className="bg-blue-500/8 border border-blue-500/20 rounded-xl p-4 space-y-2">
-          <div className="text-blue-300 font-semibold">💡 Как читать результаты</div>
-          <ul className="text-gray-400 text-xs space-y-1.5 leading-relaxed">
-            <li>• Дальний OTM даёт высокий % но часто убыточен — нужно слишком большое движение</li>
-            <li>• Дольше DTE = дороже, но форgiving timing — можно ждать дольше</li>
-            <li>• Короткий DTE дешевле, но тета съедает стоимость быстрее</li>
-            <li>• Оптимум для покупателя: дельта 0.35–0.50, DTE 30–60 дней</li>
-          </ul>
+        {isSell ? (
+          <div className="bg-purple-500/8 border border-purple-500/20 rounded-xl p-4 space-y-2">
+            <div className="text-purple-300 font-semibold">💡 Логика продавца</div>
+            <ul className="text-gray-400 text-xs space-y-1.5 leading-relaxed">
+              <li>• OTM-опционы для продажи: дельта 0.20–0.30 — высокая вероятность истечения «в нуль»</li>
+              <li>• Более длинный DTE = больше премии, но и больший риск движения</li>
+              <li>• Тета работает на продавца — каждый день снижает стоимость опциона</li>
+              <li>• Закрывай при 50% прибыли, не жди экспирации — убери риск гаммы</li>
+              <li>• Продавай только при IVR &gt; 40 — иначе премия слишком мала</li>
+            </ul>
+          </div>
+        ) : (
+          <div className="bg-blue-500/8 border border-blue-500/20 rounded-xl p-4 space-y-2">
+            <div className="text-blue-300 font-semibold">💡 Логика покупателя</div>
+            <ul className="text-gray-400 text-xs space-y-1.5 leading-relaxed">
+              <li>• Дальний OTM даёт высокий % но часто убыточен — нужно большое движение</li>
+              <li>• Дольше DTE = дороже, но больше времени для реализации прогноза</li>
+              <li>• Короткий DTE дешевле, но тета съедает стоимость быстрее</li>
+              <li>• Оптимум: дельта 0.35–0.50, DTE 30–60 дней</li>
+            </ul>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Section 5: Covered Call Calculator ───────────────────────────────────────
+
+function CoveredCallCalc() {
+  const [costStr, setCostStr] = useState('100')
+  const [curStr, setCurStr] = useState('100')
+  const [strikePct, setStrikePct] = useState(10)
+  const [premStr, setPremStr] = useState('2.00')
+  const [dte, setDte] = useState(30)
+
+  const cost = parseFloat(costStr) || 0.01
+  const cur = parseFloat(curStr) || 0.01
+  const prem = parseFloat(premStr) || 0
+  const strike = parseFloat((cur * (1 + strikePct / 100)).toFixed(2))
+
+  // Key metrics
+  const maxGain = (strike - cost + prem)
+  const maxGainPct = (maxGain / cost) * 100
+  const breakeven = cost - prem
+  const breakevenPct = ((breakeven - cost) / cost) * 100  // negative = downside cushion
+  const annualFactor = 365 / dte
+  const premYield = (prem / cur) * 100
+  const premYieldAnn = premYield * annualFactor
+
+  // Unrealised gain/loss on stock already held
+  const stockPnl = cur - cost
+  const stockPnlPct = (stockPnl / cost) * 100
+
+  // P&L chart
+  const W = 560, H = 220
+  const PAD = { l: 48, r: 16, t: 20, b: 36 }
+  const innerW = W - PAD.l - PAD.r
+  const innerH = H - PAD.t - PAD.b
+
+  const priceMin = cost * 0.65
+  const priceMax = strike * 1.20
+  const priceRange = priceMax - priceMin
+
+  const pnlMin = -(cost * 0.35 + prem)
+  const pnlMax = maxGain * 1.15
+  const pnlRange = pnlMax - pnlMin
+
+  const toX = (p: number) => PAD.l + ((p - priceMin) / priceRange) * innerW
+  const toY = (v: number) => PAD.t + (1 - (v - pnlMin) / pnlRange) * innerH
+  const y0 = toY(0)
+
+  const stockPath = [priceMin, priceMax].map((p, i) =>
+    `${i === 0 ? 'M' : 'L'}${toX(p).toFixed(1)},${toY(p - cost).toFixed(1)}`
+  ).join(' ')
+
+  // Covered call P&L: (ST - cost) + prem if ST < strike; (strike - cost + prem) if ST >= strike
+  const ccPoints: [number, number][] = [
+    [priceMin, priceMin - cost + prem],
+    [strike, strike - cost + prem],
+    [priceMax, strike - cost + prem],
+  ]
+  const ccPath = ccPoints.map(([p, v], i) =>
+    `${i === 0 ? 'M' : 'L'}${toX(p).toFixed(1)},${toY(v).toFixed(1)}`
+  ).join(' ')
+
+  // X-axis price ticks
+  const xTicks = [cost, breakeven, cur, strike].sort((a, b) => a - b)
+    .filter((v, i, arr) => i === 0 || Math.abs(v - arr[i - 1]) > priceRange * 0.04)
+
+  const inputCls = 'bg-gray-800 text-white rounded-lg px-3 py-2 text-sm border border-gray-700 focus:outline-none focus:border-teal-500 w-full'
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-lg font-semibold text-white mb-1">Covered Call — калькулятор фарма премии</h2>
+        <p className="text-sm text-gray-400 leading-relaxed">
+          Ты держишь акцию и продаёшь колл выше своей цены покупки — собираешь премию + получаешь рост до страйка.
+          Максимальная прибыль ограничена, но зато дополнительный доход гарантирован.
+        </p>
+      </div>
+
+      {/* Inputs */}
+      <div className="card space-y-4">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <div>
+            <label className="text-xs text-gray-400 font-semibold uppercase tracking-wide block mb-1">Цена покупки ($)</label>
+            <input type="text" inputMode="decimal" value={costStr}
+              onChange={e => { if (/^[0-9]*\.?[0-9]*$/.test(e.target.value)) setCostStr(e.target.value) }}
+              className={inputCls} />
+          </div>
+          <div>
+            <label className="text-xs text-gray-400 font-semibold uppercase tracking-wide block mb-1">Текущая цена ($)</label>
+            <input type="text" inputMode="decimal" value={curStr}
+              onChange={e => { if (/^[0-9]*\.?[0-9]*$/.test(e.target.value)) setCurStr(e.target.value) }}
+              className={inputCls} />
+          </div>
+          <div>
+            <label className="text-xs text-gray-400 font-semibold uppercase tracking-wide block mb-1">Страйк колла (+%)</label>
+            <div className="flex items-center gap-2">
+              <input type="range" min={1} max={30} value={strikePct} onChange={e => setStrikePct(+e.target.value)} className="flex-1 accent-teal-500" />
+              <span className="text-white text-sm font-bold w-14 text-right">+{strikePct}% <span className="text-gray-500 text-xs font-normal">${strike.toFixed(0)}</span></span>
+            </div>
+          </div>
+          <div>
+            <label className="text-xs text-gray-400 font-semibold uppercase tracking-wide block mb-1">Премия ($)</label>
+            <input type="text" inputMode="decimal" value={premStr}
+              onChange={e => { if (/^[0-9]*\.?[0-9]*$/.test(e.target.value)) setPremStr(e.target.value) }}
+              className={inputCls} />
+          </div>
+        </div>
+        <div className="flex items-center gap-4">
+          <label className="text-xs text-gray-400 font-semibold uppercase tracking-wide shrink-0">Дней (DTE):</label>
+          <input type="range" min={7} max={90} value={dte} onChange={e => setDte(+e.target.value)} className="w-40 accent-teal-500" />
+          <span className="text-white text-sm font-bold">{dte} дн.</span>
+        </div>
+      </div>
+
+      {/* Key metrics */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="bg-teal-500/10 border border-teal-500/25 rounded-xl p-3 text-center">
+          <div className="text-xs text-teal-400 font-semibold mb-1">Макс прибыль</div>
+          <div className="text-xl font-bold text-white">${maxGain.toFixed(2)}</div>
+          <div className="text-xs text-teal-300">{maxGainPct.toFixed(1)}% от вложений</div>
+        </div>
+        <div className="bg-green-500/10 border border-green-500/25 rounded-xl p-3 text-center">
+          <div className="text-xs text-green-400 font-semibold mb-1">Премия / год</div>
+          <div className="text-xl font-bold text-white">{premYieldAnn.toFixed(1)}%</div>
+          <div className="text-xs text-green-300">{premYield.toFixed(2)}% за {dte} дн.</div>
+        </div>
+        <div className="bg-blue-500/10 border border-blue-500/25 rounded-xl p-3 text-center">
+          <div className="text-xs text-blue-400 font-semibold mb-1">Безубыток</div>
+          <div className="text-xl font-bold text-white">${breakeven.toFixed(2)}</div>
+          <div className="text-xs text-blue-300">Подушка {Math.abs(breakevenPct).toFixed(1)}% вниз</div>
+        </div>
+        <div className={`border rounded-xl p-3 text-center ${stockPnl >= 0 ? 'bg-green-500/8 border-green-500/20' : 'bg-red-500/8 border-red-500/20'}`}>
+          <div className={`text-xs font-semibold mb-1 ${stockPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>Нереализ. P&L</div>
+          <div className="text-xl font-bold text-white">{stockPnl >= 0 ? '+' : ''}{stockPnl.toFixed(2)}</div>
+          <div className={`text-xs ${stockPnl >= 0 ? 'text-green-300' : 'text-red-300'}`}>{fmtPct(stockPnlPct)} с покупки</div>
+        </div>
+      </div>
+
+      {/* P&L Chart */}
+      <div className="bg-gray-900/60 border border-gray-700/40 rounded-xl p-4 overflow-x-auto">
+        <div className="text-xs text-gray-500 mb-2 font-semibold uppercase tracking-wide">P&L на экспирацию (на акцию)</div>
+        <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="block">
+          {/* Zero line */}
+          <line x1={PAD.l} y1={y0} x2={W - PAD.r} y2={y0} stroke="#4b5563" strokeWidth={1} strokeDasharray="4,3" />
+          <text x={PAD.l - 4} y={y0 + 4} textAnchor="end" fontSize={9} fill="#6b7280">0</text>
+
+          {/* Premium cushion zone */}
+          <rect x={toX(priceMin)} y={toY(prem)} width={toX(strike) - toX(priceMin)} height={toY(0) - toY(prem)}
+            fill="rgba(20,184,166,0.08)" />
+
+          {/* Cap zone (profit locked) */}
+          <rect x={toX(strike)} y={toY(maxGain)} width={toX(priceMax) - toX(strike)} height={toY(0) - toY(maxGain)}
+            fill="rgba(20,184,166,0.15)" />
+
+          {/* Strike vertical line */}
+          <line x1={toX(strike)} y1={PAD.t} x2={toX(strike)} y2={PAD.t + innerH} stroke="#14b8a6" strokeWidth={1} strokeDasharray="4,3" />
+          <text x={toX(strike)} y={PAD.t - 6} textAnchor="middle" fontSize={9} fill="#14b8a6">Страйк ${strike.toFixed(0)}</text>
+
+          {/* Cost basis vertical line */}
+          <line x1={toX(cost)} y1={PAD.t} x2={toX(cost)} y2={PAD.t + innerH} stroke="#6b7280" strokeWidth={1} strokeDasharray="3,3" />
+          <text x={toX(cost)} y={H - 4} textAnchor="middle" fontSize={8} fill="#6b7280">Покупка ${cost.toFixed(0)}</text>
+
+          {/* Breakeven vertical line */}
+          <line x1={toX(breakeven)} y1={PAD.t} x2={toX(breakeven)} y2={PAD.t + innerH} stroke="#3b82f6" strokeWidth={1} strokeDasharray="3,3" />
+          <text x={toX(breakeven)} y={H - 4} textAnchor="middle" fontSize={8} fill="#3b82f6">BE ${breakeven.toFixed(0)}</text>
+
+          {/* Current price marker */}
+          <circle cx={toX(cur)} cy={toY(cur - cost + prem)} r={4} fill="#14b8a6" />
+          <circle cx={toX(cur)} cy={toY(cur - cost)} r={3} fill="#9ca3af" />
+
+          {/* Stock only line */}
+          <path d={stockPath} fill="none" stroke="#9ca3af" strokeWidth={1.5} strokeDasharray="5,3" />
+
+          {/* Covered call line */}
+          <path d={ccPath} fill="none" stroke="#14b8a6" strokeWidth={2.5} />
+
+          {/* Y-axis ticks */}
+          {[pnlMin, 0, prem, maxGain].filter((v, i, a) =>
+            a.findIndex(x => Math.abs(x - v) < pnlRange * 0.04) === i
+          ).map(v => (
+            <g key={v}>
+              <line x1={PAD.l - 3} y1={toY(v)} x2={PAD.l} y2={toY(v)} stroke="#4b5563" strokeWidth={1} />
+              <text x={PAD.l - 5} y={toY(v) + 4} textAnchor="end" fontSize={8} fill="#6b7280">
+                {v >= 0 ? '+' : ''}{v.toFixed(1)}
+              </text>
+            </g>
+          ))}
+
+          {/* X-axis ticks */}
+          {xTicks.map(p => (
+            <text key={p} x={toX(p)} y={H - 4} textAnchor="middle" fontSize={8} fill="#4b5563">${p.toFixed(0)}</text>
+          ))}
+
+          {/* Legend */}
+          <g transform={`translate(${PAD.l + 8},${PAD.t + 4})`}>
+            <line x1={0} y1={6} x2={18} y2={6} stroke="#14b8a6" strokeWidth={2.5} />
+            <text x={22} y={10} fontSize={9} fill="#14b8a6">Covered Call</text>
+            <line x1={100} y1={6} x2={118} y2={6} stroke="#9ca3af" strokeWidth={1.5} strokeDasharray="5,3" />
+            <text x={122} y={10} fontSize={9} fill="#9ca3af">Только акция</text>
+          </g>
+
+          {/* Annotations */}
+          <text x={toX(strike) + 6} y={toY(maxGain) - 5} fontSize={8} fill="#14b8a6">
+            Макс: +${maxGain.toFixed(2)}
+          </text>
+          <text x={toX(priceMin) + 6} y={toY(prem) - 4} fontSize={8} fill="#14b8a6">
+            Премия: +${prem.toFixed(2)}
+          </text>
+        </svg>
+      </div>
+
+      {/* Scenarios */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+        <div className="bg-teal-500/8 border border-teal-500/20 rounded-xl p-3">
+          <div className="text-teal-400 font-semibold mb-2">Акция выросла до/выше страйка</div>
+          <div className="space-y-1 text-gray-400">
+            <div className="flex justify-between"><span>Рост акции:</span><span className="text-white">+${(strike - cost).toFixed(2)}</span></div>
+            <div className="flex justify-between"><span>Премия:</span><span className="text-teal-300">+${prem.toFixed(2)}</span></div>
+            <div className="flex justify-between border-t border-gray-700/40 pt-1 mt-1"><span>Итого:</span><span className="text-white font-bold">+${maxGain.toFixed(2)} ({maxGainPct.toFixed(1)}%)</span></div>
+          </div>
+          <div className="mt-2 text-gray-500">Акцию «отзовут» по страйку — всё ок, цель достигнута.</div>
+        </div>
+        <div className="bg-blue-500/8 border border-blue-500/20 rounded-xl p-3">
+          <div className="text-blue-400 font-semibold mb-2">Акция стоит между покупкой и страйком</div>
+          <div className="space-y-1 text-gray-400">
+            <div className="flex justify-between"><span>Рост акции:</span><span className="text-white">+${(cur - cost).toFixed(2)}</span></div>
+            <div className="flex justify-between"><span>Премия (кэш):</span><span className="text-teal-300">+${prem.toFixed(2)}</span></div>
+            <div className="flex justify-between border-t border-gray-700/40 pt-1 mt-1"><span>P&L:</span><span className="text-white font-bold">+${(cur - cost + prem).toFixed(2)}</span></div>
+          </div>
+          <div className="mt-2 text-gray-500">Акция осталась, ещё один цикл продаж.</div>
+        </div>
+        <div className="bg-red-500/8 border border-red-500/20 rounded-xl p-3">
+          <div className="text-red-400 font-semibold mb-2">Акция упала ниже безубытка</div>
+          <div className="space-y-1 text-gray-400">
+            <div className="flex justify-between"><span>Убыток акции:</span><span className="text-red-300">−${(cost - breakeven * 0.9).toFixed(2)}+</span></div>
+            <div className="flex justify-between"><span>Смягчение:</span><span className="text-teal-300">+${prem.toFixed(2)}</span></div>
+            <div className="flex justify-between border-t border-gray-700/40 pt-1 mt-1"><span>Подушка:</span><span className="text-white font-bold">{Math.abs(breakevenPct).toFixed(1)}% вниз</span></div>
+          </div>
+          <div className="mt-2 text-gray-500">Премия частично покрывает падение.</div>
+        </div>
+      </div>
+
+      {/* Key insight box */}
+      <div className="bg-gray-800/60 border border-gray-700/40 rounded-xl p-4 text-sm text-gray-400 leading-relaxed space-y-2">
+        <div className="text-white font-semibold text-sm">Когда covered call имеет смысл</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+          <div>
+            <div className="text-green-400 font-medium mb-1">Подходит если:</div>
+            <ul className="space-y-1">
+              <li>• Ожидаешь умеренный рост или боковик</li>
+              <li>• Готов продать акцию по страйку</li>
+              <li>• IV достаточно высокая (IVR &gt; 30)</li>
+              <li>• Это акция «на длинный срок» — выход по цели</li>
+            </ul>
+          </div>
+          <div>
+            <div className="text-red-400 font-medium mb-1">Не подходит если:</div>
+            <ul className="space-y-1">
+              <li>• Ожидаешь взрывной рост (срежешь профит)</li>
+              <li>• Earnings / катализатор рядом — риск assign'а</li>
+              <li>• IV очень низкая — премия не стоит усилий</li>
+              <li>• Акция в убытке и ты надеешься «выйти в ноль»</li>
+            </ul>
+          </div>
         </div>
       </div>
     </div>
   )
 }
 
-// ── Section 5: Cheat sheet ────────────────────────────────────────────────────
+// ── Section 6: Cheat sheet ────────────────────────────────────────────────────
 
 function CheatSheet() {
   const rules = [
@@ -640,7 +968,8 @@ function CommonMistakes() {
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function OptionLab() {
-  const [labS, setLabS] = useState(100)
+  const [labSStr, setLabSStr] = useState('100')
+  const labS = parseFloat(labSStr) || 1
   const [labIv, setLabIv] = useState(30)
   const [labType] = useState<'call'|'put'>('call')
 
@@ -660,8 +989,9 @@ export default function OptionLab() {
           <h2 className="text-lg font-semibold text-white">Что такое страйк: ITM, ATM, OTM</h2>
           <div className="flex items-center gap-3 text-sm">
             <label className="text-gray-400">Цена акции:</label>
-            <input type="number" value={labS} onChange={e=>setLabS(Math.max(1,+e.target.value))} min={1}
-              className="w-20 bg-gray-800 text-white rounded-lg px-2 py-1 border border-gray-700 focus:outline-none focus:border-blue-500 text-sm" />
+            <input type="text" inputMode="decimal" value={labSStr}
+              onChange={e => { if (/^[0-9]*\.?[0-9]*$/.test(e.target.value)) setLabSStr(e.target.value) }}
+              className="w-24 bg-gray-800 text-white rounded-lg px-2 py-1 border border-gray-700 focus:outline-none focus:border-blue-500 text-sm" />
           </div>
         </div>
         <StrikeVisual S={labS} type={labType} />
@@ -675,6 +1005,11 @@ export default function OptionLab() {
       {/* Comparison tool */}
       <section className="card">
         <ComparisonTool />
+      </section>
+
+      {/* Covered Call Calculator */}
+      <section className="card">
+        <CoveredCallCalc />
       </section>
 
       {/* Theta chart */}

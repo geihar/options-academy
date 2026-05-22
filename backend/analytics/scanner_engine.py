@@ -91,15 +91,16 @@ def _compute_forecast(
     delta: float,
     theta: float,
     days_to_expiry: int,
+    is_short: bool = False,
 ) -> ProfitForecast:
-    """Compute quantitative P&L forecast for an option position (long 1 contract)."""
+    """Compute quantitative P&L forecast for an option position (1 contract).
+    is_short=True → seller perspective (received premium, pays to close).
+    """
     T = max(days_to_expiry, 1) / 365.0
     multiplier = 100
-
-    # Expected 1-std-dev move
     expected_move_1sd = current_price * iv * math.sqrt(T)
 
-    # Breakeven
+    # Breakeven: same formula for buyers and sellers
     if option_type == "call":
         breakeven = strike + market_price
         move_to_be = breakeven - current_price
@@ -110,9 +111,6 @@ def _compute_forecast(
     move_pct = move_to_be / current_price * 100 if current_price > 0 else 0
     be_vs_1sd = move_to_be / expected_move_1sd if expected_move_1sd > 0 else 99
 
-    # Probability of profit ≈ probability ITM (delta proxy)
-    prob_profit = abs(delta)
-
     # Scenarios: stock ±10% and flat at expiry
     scenarios = {}
     for label, stock_pct in [("bull", 1.10), ("bear", 0.90), ("flat", 1.0)]:
@@ -121,32 +119,49 @@ def _compute_forecast(
             intrinsic = max(0.0, exit_price - strike)
         else:
             intrinsic = max(0.0, strike - exit_price)
-        pnl = (intrinsic - market_price) * multiplier
+        if is_short:
+            # Seller collected market_price, now must pay intrinsic to close
+            pnl = (market_price - intrinsic) * multiplier
+        else:
+            pnl = (intrinsic - market_price) * multiplier
         scenarios[label] = round(pnl, 2)
 
-    # Max profit / max loss
-    max_loss = market_price * multiplier  # premium paid
-    if option_type == "call":
-        # Unlimited upside, estimate using 2× expected move
-        target_price = current_price + expected_move_1sd * 2
-        max_profit = max(0, target_price - strike - market_price) * multiplier
+    if is_short:
+        # Seller: max profit = premium collected; max loss = large adverse move
+        max_profit = market_price * multiplier
+        # Estimate max loss as 2-std-dev adverse move
+        if option_type == "call":
+            adverse_price = current_price + expected_move_1sd * 2
+            max_loss = max(0, adverse_price - strike - market_price) * multiplier
+        else:
+            adverse_price = max(0, current_price - expected_move_1sd * 2)
+            max_loss = max(0, strike - adverse_price - market_price) * multiplier
+        # Prob of profit for seller ≈ 1 - P(ITM) = 1 - abs(delta)
+        prob_profit = 1.0 - abs(delta)
+        ev = prob_profit * max_profit * 0.5 - (1 - prob_profit) * max_loss
+        # Annualized yield on collected premium
+        if market_price > 0 and days_to_expiry > 0:
+            ann_return = (max_profit / (current_price * multiplier)) * (365.0 / days_to_expiry) * 100
+        else:
+            ann_return = 0.0
     else:
-        target_price = max(0, current_price - expected_move_1sd * 2)
-        max_profit = max(0, strike - target_price - market_price) * multiplier
+        # Buyer: max loss = premium paid; max profit estimated at 2-std-dev
+        max_loss = market_price * multiplier
+        if option_type == "call":
+            target_price = current_price + expected_move_1sd * 2
+            max_profit = max(0, target_price - strike - market_price) * multiplier
+        else:
+            target_price = max(0, current_price - expected_move_1sd * 2)
+            max_profit = max(0, strike - target_price - market_price) * multiplier
+        prob_profit = abs(delta)
+        ev = prob_profit * max_profit * 0.5 - (1 - prob_profit) * max_loss
+        target_pnl = max_profit * 0.5
+        cost_basis = market_price * multiplier
+        ann_return = (
+            (target_pnl / cost_basis) * (365.0 / days_to_expiry) * 100
+            if cost_basis > 0 and days_to_expiry > 0 and target_pnl > 0 else 0.0
+        )
 
-    # Expected Value = P(profit) * avg_gain - P(loss) * premium
-    avg_gain_if_profit = max_profit * 0.5  # conservative: assume half of max
-    ev = prob_profit * avg_gain_if_profit - (1 - prob_profit) * max_loss
-
-    # Annualized return if we hit 50% of max profit
-    target_pnl = max_profit * 0.5
-    cost_basis = market_price * multiplier
-    if cost_basis > 0 and days_to_expiry > 0 and target_pnl > 0:
-        ann_return = (target_pnl / cost_basis) * (365.0 / days_to_expiry) * 100
-    else:
-        ann_return = 0.0
-
-    # Total theta drag
     theta_drag = abs(theta) * days_to_expiry * multiplier
 
     return ProfitForecast(
@@ -196,6 +211,39 @@ def _recommend_strategy(
         f"{top.profit_catalyst}"
     )
     return strategy, rationale
+
+
+@dataclass
+class CoveredCallCandidate:
+    """A covered call opportunity on an existing stock holding."""
+    ticker: str
+    current_price: float
+    shares: int                          # shares held (from portfolio)
+    cost_basis: float                    # avg cost per share
+    strike: float
+    expiry: str
+    days_to_expiry: int
+    market_price: float                  # option mid price per share
+    bid: float
+    ask: float
+    volume: int
+    open_interest: int
+    iv: float
+    delta: float
+    theta: float
+    iv_rank: Optional[float]
+    # Yield metrics
+    premium_per_contract: float          # market_price * 100
+    annual_yield_on_cost: float          # % annualised vs cost_basis
+    annual_yield_on_current: float       # % annualised vs current_price
+    downside_protection_pct: float       # premium / current_price * 100
+    max_profit_if_assigned: float        # (strike - cost_basis + market_price) * shares
+    static_return_pct: float             # premium / current_price * 100 (one-period)
+    otm_pct: float                       # how far OTM the strike is
+    days_to_earnings: Optional[int]
+    risk_factors: list
+    score: float
+    quality: str
 
 
 @dataclass
@@ -461,7 +509,7 @@ def scan_ticker_options(
     iv_stats: dict,
     min_volume: int = 10,
     min_open_interest: int = 50,
-    min_dte: int = 5,
+    min_dte: int = 21,
     max_dte: int = 60,
     strategies: list[str] = None,  # ["sell_premium", "buy_calls", "buy_puts", "any"]
     r: float = 0.05,
@@ -581,9 +629,23 @@ def scan_ticker_options(
             option_type=option_type,
         )
 
-        # Drop lottery-ticket options — delta < 0.10 means < 10% chance of profit
-        if abs(delta) < 0.10:
+        # Drop lottery tickets (delta < 0.10) and deep ITM (delta > 0.75).
+        # Deep ITM = almost no time value, will be exercised, forces asset sale/purchase.
+        # Good range: buyers want 0.30–0.65, sellers want 0.15–0.40 (OTM only).
+        abs_delta = abs(delta)
+        if abs_delta < 0.10 or abs_delta > 0.75:
             continue
+
+        is_sell_strategy = strategies and strategies[0] == "sell_premium"
+        if is_sell_strategy:
+            # For premium selling: must be OTM (delta ≤ 0.40) and elevated IV
+            if abs_delta > 0.40:
+                continue
+            if iv_rank is not None and iv_rank < 40:
+                continue
+            # Enforce tighter DTE for selling: 25–50 days is the book sweet spot
+            if dte < 25 or dte > 50:
+                continue
 
         composite = compute_composite_score(signals)
         if composite < 20:
@@ -598,6 +660,7 @@ def scan_ticker_options(
             delta=delta,
             theta=theta,
             days_to_expiry=dte,
+            is_short=is_sell_strategy,
         )
 
         strategy, rationale = _recommend_strategy(signals, iv_rank, option_type, delta, dte)
@@ -636,3 +699,199 @@ def scan_ticker_options(
     # Sort by score, return top 5 per ticker
     candidates.sort(key=lambda c: c.composite_score, reverse=True)
     return candidates[:5]
+
+
+def scan_covered_calls(
+    ticker: str,
+    shares: int,
+    cost_basis: float,
+    fetcher,
+    iv_stats: dict,
+    min_dte: int = 25,
+    max_dte: int = 45,
+    min_delta: float = 0.15,
+    max_delta: float = 0.38,
+    min_volume: int = 5,
+    min_open_interest: int = 20,
+    r: float = 0.05,
+) -> tuple[list[CoveredCallCandidate], Optional[str]]:
+    """Find covered call candidates for an existing stock holding.
+    Returns (candidates, error_message).
+    """
+    try:
+        chain_data = fetcher.get_options_chain(ticker)
+    except Exception as e:
+        return [], f"Ошибка получения данных: {e}"
+
+    current_price = chain_data.get("current_price", 0)
+    if not current_price:
+        return [], "Не удалось получить цену акции"
+
+    iv_rank = iv_stats.get("iv_rank")
+    hv_30 = iv_stats.get("hv_30")
+    dte_earn = days_to_earnings(ticker)
+    today = date.today()
+    contracts = shares // 100  # 1 contract = 100 shares
+
+    if contracts < 1:
+        return [], f"Недостаточно акций для покрытого колла (нужно ≥ 100, есть {shares})"
+
+    candidates = []
+    for opt in chain_data.get("calls", []):
+        try:
+            expiry_date = date.fromisoformat(opt["expiry"])
+        except (ValueError, KeyError):
+            continue
+
+        dte = (expiry_date - today).days
+        if dte < min_dte or dte > max_dte:
+            continue
+
+        strike = opt.get("strike", 0)
+        # Only OTM calls — must not put the position at immediate assignment risk
+        if strike <= current_price:
+            continue
+
+        volume = opt.get("volume", 0) or 0
+        oi = opt.get("open_interest", 0) or 0
+        if volume < min_volume or oi < min_open_interest:
+            continue
+
+        bid = opt.get("bid", 0) or 0
+        ask = opt.get("ask", 0) or 0
+        last = opt.get("last", 0) or 0
+        mid = (bid + ask) / 2 if bid and ask else last
+        if mid < 0.05:
+            continue
+
+        T = max(dte, 1) / 365.0
+        iv = opt.get("iv")
+        if not iv:
+            try:
+                iv = implied_volatility(mid, current_price, strike, T, r, "call")
+            except Exception:
+                iv = None
+        if not iv or iv <= 0:
+            continue
+
+        try:
+            bs = black_scholes(current_price, strike, T, r, iv, "call")
+        except Exception:
+            continue
+
+        abs_delta = abs(bs.delta)
+        if abs_delta < min_delta or abs_delta > max_delta:
+            continue
+
+        spread_pct = (ask - bid) / mid if mid > 0 and bid > 0 else 1.0
+        if spread_pct > 0.50:
+            continue
+
+        # ── Key metrics ───────────────────────────────────────────────────────
+        otm_pct = (strike - current_price) / current_price * 100
+        premium_per_contract = mid * 100
+        annual_yield_on_cost = (mid / cost_basis) * (365.0 / dte) * 100
+        annual_yield_on_current = (mid / current_price) * (365.0 / dte) * 100
+        downside_protection_pct = mid / current_price * 100
+        static_return_pct = mid / current_price * 100
+        # If assigned: sell at strike, already received premium
+        profit_if_assigned = (strike - cost_basis + mid) * shares
+
+        # ── Risk factors ──────────────────────────────────────────────────────
+        risk_factors = []
+        if dte_earn is not None and dte_earn <= dte:
+            risk_factors.append(f"Отчётность через {dte_earn} дн. — высокий риск резкого движения, не продавай через отчётность")
+        if abs_delta > 0.30:
+            risk_factors.append(f"Дельта {abs_delta:.2f} — высокая вероятность исполнения и принудительной продажи акций")
+        if otm_pct < 3.0:
+            risk_factors.append(f"Страйк всего {otm_pct:.1f}% выше цены — небольшой рост акции вызовет исполнение")
+        if spread_pct > 0.25:
+            risk_factors.append(f"Широкий спред ({spread_pct*100:.0f}% mid) — сложнее откупить позицию")
+        if cost_basis > strike:
+            risk_factors.append("⚠ Страйк ниже себестоимости — при исполнении зафиксируешь убыток по акции")
+
+        # ── Score ─────────────────────────────────────────────────────────────
+        score = 0.0
+
+        # Annual yield on current price (primary driver)
+        if annual_yield_on_current >= 25:
+            score += 30
+        elif annual_yield_on_current >= 15:
+            score += 22
+        elif annual_yield_on_current >= 10:
+            score += 14
+        else:
+            score += 6
+
+        # Strike distance: want 3-8% OTM
+        if 3.0 <= otm_pct <= 8.0:
+            score += 25
+        elif 2.0 <= otm_pct < 3.0 or 8.0 < otm_pct <= 12.0:
+            score += 15
+        else:
+            score += 5
+
+        # Delta sweet spot: 0.20-0.30
+        if 0.20 <= abs_delta <= 0.30:
+            score += 20
+        elif 0.15 <= abs_delta < 0.20 or 0.30 < abs_delta <= 0.35:
+            score += 12
+        else:
+            score += 5
+
+        # No earnings in the window
+        if dte_earn is None or dte_earn > dte:
+            score += 15
+        else:
+            score -= 25
+
+        # IV environment bonus
+        if iv_rank is not None and iv_rank >= 40:
+            score += 10
+
+        # Profit if assigned — positive is good
+        if profit_if_assigned > 0:
+            score += 10
+
+        # Spread penalty
+        if spread_pct > 0.30:
+            score -= 10
+
+        score = max(0.0, min(100.0, score))
+        if score < 25:
+            continue
+
+        quality = "Отличная" if score >= 70 else "Хорошая" if score >= 50 else "Средняя"
+
+        candidates.append(CoveredCallCandidate(
+            ticker=ticker,
+            current_price=round(current_price, 2),
+            shares=shares,
+            cost_basis=round(cost_basis, 2),
+            strike=strike,
+            expiry=opt["expiry"],
+            days_to_expiry=dte,
+            market_price=round(mid, 4),
+            bid=bid,
+            ask=ask,
+            volume=volume,
+            open_interest=oi,
+            iv=round(iv, 4),
+            delta=round(bs.delta, 4),
+            theta=round(bs.theta, 4),
+            iv_rank=round(iv_rank, 1) if iv_rank is not None else None,
+            premium_per_contract=round(premium_per_contract, 2),
+            annual_yield_on_cost=round(annual_yield_on_cost, 1),
+            annual_yield_on_current=round(annual_yield_on_current, 1),
+            downside_protection_pct=round(downside_protection_pct, 2),
+            max_profit_if_assigned=round(profit_if_assigned, 2),
+            static_return_pct=round(static_return_pct, 2),
+            otm_pct=round(otm_pct, 1),
+            days_to_earnings=dte_earn,
+            risk_factors=risk_factors,
+            score=round(score, 1),
+            quality=quality,
+        ))
+
+    candidates.sort(key=lambda c: c.score, reverse=True)
+    return candidates[:4], None

@@ -88,6 +88,19 @@ class OptionPosition(Base):
     lesson_learned = Column(Text, nullable=True)
 
 
+class StockHolding(Base):
+    """Stock positions held by the user — used for covered call scanning."""
+    __tablename__ = "stock_holdings"
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_session_id = Column(String, nullable=False, index=True)
+    ticker = Column(String, nullable=False)
+    shares = Column(Integer, nullable=False)          # must be multiple of 100 for 1 covered call
+    cost_basis = Column(Float, nullable=False)         # avg cost per share
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
 def get_db():
     db = SessionLocal()
     try:

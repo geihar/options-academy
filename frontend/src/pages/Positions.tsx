@@ -1247,34 +1247,71 @@ function PositionCard({
         {pos.status === 'open' && <PositionAdvicePanel pos={pos} />}
 
         {/* P&L row */}
-        {pos.status === 'open' && pnl && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-            <div className="bg-gray-800/60 rounded-lg p-2 text-center">
-              <div className="text-gray-400 mb-0.5">Цена акции</div>
-              <div className="text-white font-semibold">
-                {pnl.current_price ? `$${pnl.current_price.toFixed(2)}` : '—'}
+        {pos.status === 'open' && pnl && (() => {
+          const isCoveredCall = pos.direction === 'short' && pos.option_type === 'call'
+            && pos.is_covered && pos.stock_cost_basis != null
+          const costBasis = pos.stock_cost_basis ?? null
+          const dte = pnl.days_to_expiry
+
+          // Доходность при реализации (акция отозвана по страйку)
+          const yieldAtAssignment = costBasis
+            ? ((pos.strike - costBasis + pos.entry_price) / costBasis) * 100
+            : null
+          // Аннуализированная: масштабируем по DTE (полный период опциона = days_held + dte)
+          const totalDays = (pnl.days_held ?? 0) + (dte ?? 0)
+          const annualized = yieldAtAssignment !== null && totalDays > 0
+            ? yieldAtAssignment * (365 / totalDays)
+            : null
+
+          return (
+            <div className={`grid gap-2 text-xs ${isCoveredCall ? 'grid-cols-2 sm:grid-cols-6' : 'grid-cols-2 sm:grid-cols-4'}`}>
+              <div className="bg-gray-800/60 rounded-lg p-2 text-center">
+                <div className="text-gray-400 mb-0.5">Цена акции</div>
+                <div className="text-white font-semibold">
+                  {pnl.current_price ? `$${pnl.current_price.toFixed(2)}` : '—'}
+                </div>
               </div>
-            </div>
-            <div className="bg-gray-800/60 rounded-lg p-2 text-center">
-              <div className="text-gray-400 mb-0.5">Текущая цена опц.</div>
-              <div className="text-white font-semibold">
-                {pnl.current_option_price != null ? `$${pnl.current_option_price.toFixed(2)}` : '—'}
+              <div className="bg-gray-800/60 rounded-lg p-2 text-center">
+                <div className="text-gray-400 mb-0.5">Текущая цена опц.</div>
+                <div className="text-white font-semibold">
+                  {pnl.current_option_price != null ? `$${pnl.current_option_price.toFixed(2)}` : '—'}
+                </div>
               </div>
-            </div>
-            <div className="bg-gray-800/60 rounded-lg p-2 text-center">
-              <div className="text-gray-400 mb-0.5">Нереализ. P&L</div>
-              <div className={`font-bold ${pnlColor(pnl.unrealized_pnl)}`}>
-                {fmt$(pnl.unrealized_pnl)}
+              <div className="bg-gray-800/60 rounded-lg p-2 text-center">
+                <div className="text-gray-400 mb-0.5">Нереализ. P&L</div>
+                <div className={`font-bold ${pnlColor(pnl.unrealized_pnl)}`}>
+                  {fmt$(pnl.unrealized_pnl)}
+                </div>
               </div>
-            </div>
-            <div className="bg-gray-800/60 rounded-lg p-2 text-center">
-              <div className="text-gray-400 mb-0.5">% изменение</div>
-              <div className={`font-bold ${pnlColor(pnl.unrealized_pnl_pct)}`}>
-                {fmtPct(pnl.unrealized_pnl_pct)}
+              <div className="bg-gray-800/60 rounded-lg p-2 text-center">
+                <div className="text-gray-400 mb-0.5">% изменение</div>
+                <div className={`font-bold ${pnlColor(pnl.unrealized_pnl_pct)}`}>
+                  {fmtPct(pnl.unrealized_pnl_pct)}
+                </div>
               </div>
+              {isCoveredCall && (
+                <>
+                  <div className="bg-teal-500/10 border border-teal-500/25 rounded-lg p-2 text-center">
+                    <div className="text-teal-400 mb-0.5">Доход. при assign</div>
+                    <div className="text-teal-300 font-bold">
+                      {yieldAtAssignment !== null ? `+${yieldAtAssignment.toFixed(2)}%` : '—'}
+                    </div>
+                    <div className="text-gray-600 mt-0.5">
+                      за {totalDays > 0 ? `${totalDays} дн.` : '?'}
+                    </div>
+                  </div>
+                  <div className="bg-teal-500/10 border border-teal-500/25 rounded-lg p-2 text-center">
+                    <div className="text-teal-400 mb-0.5">% годовых</div>
+                    <div className="text-teal-300 font-bold">
+                      {annualized !== null ? `+${annualized.toFixed(1)}%` : '—'}
+                    </div>
+                    <div className="text-gray-600 mt-0.5">аннуализир.</div>
+                  </div>
+                </>
+              )}
             </div>
-          </div>
-        )}
+          )
+        })()}
 
         {/* Closed P&L */}
         {pos.status === 'closed' && pos.realized_pnl !== null && (

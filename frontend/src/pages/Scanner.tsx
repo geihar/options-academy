@@ -1,6 +1,13 @@
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { runScan, runNakedScan, fetchScannerUniverse, runUniverseScan, fetchTickerUniverse, ScannerCandidate, ScanTickerResult, ChapterSignal, EvidenceItem, NakedCandidate, NakedTickerResult, ScannerUniverseItem, ScannerUniverseResponse, QuickScanResult, UniverseScanResponse } from '../api/client'
+import { runScan, runNakedScan, fetchScannerUniverse, runUniverseScan, fetchTickerUniverse, ScannerCandidate, ScanTickerResult, ChapterSignal, EvidenceItem, NakedCandidate, NakedTickerResult, ScannerUniverseItem, ScannerUniverseResponse, QuickScanResult, UniverseScanResponse, StockHolding, CoveredCallCandidate, HoldingScanResult, listHoldings, addHolding, updateHolding, deleteHolding, runCoveredCallScan } from '../api/client'
+
+function getPortfolioSessionId(): string {
+  let id = localStorage.getItem('portfolio_session_id')
+  if (!id) { id = `pf_${Math.random().toString(36).slice(2)}`; localStorage.setItem('portfolio_session_id', id) }
+  return id
+}
+const PORTFOLIO_SESSION = getPortfolioSessionId()
 
 // ── Preset watchlists ──────────────────────────────────────────────────────────
 const WATCHLISTS: Record<string, string[]> = {
@@ -1236,10 +1243,317 @@ function ScannerUniversePicker({ onAdd }: { onAdd: (tickers: string[]) => void }
   )
 }
 
+// ── Covered Call Candidate Card ───────────────────────────────────────────────
+
+function CoveredCallCard({ c, navigate }: { c: CoveredCallCandidate; navigate: (p: string) => void }) {
+  const [showRisks, setShowRisks] = useState(false)
+  const qualityColor = c.quality === 'Отличная' ? 'text-green-400 border-green-500/40 bg-green-500/10'
+    : c.quality === 'Хорошая' ? 'text-blue-400 border-blue-500/40 bg-blue-500/10'
+    : 'text-gray-400 border-gray-600 bg-gray-800/50'
+
+  return (
+    <div className="border border-gray-700/50 rounded-xl bg-gray-800/30 p-4 space-y-3">
+      {/* Header row */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-white font-bold">${c.strike} CALL</span>
+          <span className="text-gray-500 text-xs">{c.expiry} · {c.days_to_expiry} дн.</span>
+          <span className={`text-xs px-2 py-0.5 rounded-full border font-semibold ${qualityColor}`}>{c.quality}</span>
+        </div>
+        <div className="text-xs text-gray-500">{c.otm_pct.toFixed(1)}% OTM · Δ{Math.abs(c.delta).toFixed(2)}</div>
+      </div>
+
+      {/* Key metrics grid */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+        <div className="bg-gray-900/60 rounded-lg p-2.5 text-center">
+          <div className="text-gray-500 mb-0.5">Премия / контракт</div>
+          <div className="text-green-400 font-bold text-base">${c.premium_per_contract.toFixed(0)}</div>
+          <div className="text-gray-600">${c.market_price.toFixed(2)} / акция</div>
+        </div>
+        <div className="bg-gray-900/60 rounded-lg p-2.5 text-center">
+          <div className="text-gray-500 mb-0.5">Доходность / год</div>
+          <div className="text-blue-400 font-bold text-base">{c.annual_yield_on_current.toFixed(1)}%</div>
+          <div className="text-gray-600">от текущей цены</div>
+        </div>
+        <div className="bg-gray-900/60 rounded-lg p-2.5 text-center">
+          <div className="text-gray-500 mb-0.5">Защита вниз</div>
+          <div className="text-yellow-400 font-bold text-base">{c.downside_protection_pct.toFixed(2)}%</div>
+          <div className="text-gray-600">буфер от падения</div>
+        </div>
+        <div className="bg-gray-900/60 rounded-lg p-2.5 text-center">
+          <div className="text-gray-500 mb-0.5">Макс. прибыль</div>
+          <div className={`font-bold text-base ${c.max_profit_if_assigned >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+            ${c.max_profit_if_assigned.toFixed(0)}
+          </div>
+          <div className="text-gray-600">при исполнении</div>
+        </div>
+      </div>
+
+      {/* Secondary metrics */}
+      <div className="flex gap-4 text-xs text-gray-500 flex-wrap">
+        <span>Доходн. на себест.: <span className="text-white">{c.annual_yield_on_cost.toFixed(1)}%/год</span></span>
+        <span>IV: <span className="text-white">{(c.iv * 100).toFixed(0)}%</span></span>
+        {c.iv_rank != null && <span>IVR: <span className="text-white">{c.iv_rank.toFixed(0)}</span></span>}
+        <span>Объём: <span className="text-white">{c.volume}</span></span>
+        <span>OI: <span className="text-white">{c.open_interest}</span></span>
+        {c.days_to_earnings != null && (
+          <span className="text-orange-400">Отчётность через {c.days_to_earnings} дн.</span>
+        )}
+      </div>
+
+      {/* Risks toggle */}
+      {c.risk_factors.length > 0 && (
+        <div>
+          <button onClick={() => setShowRisks(v => !v)}
+            className="text-xs text-orange-400 hover:text-orange-300 transition-colors">
+            {showRisks ? '▲' : '▼'} Риски ({c.risk_factors.length})
+          </button>
+          {showRisks && (
+            <ul className="mt-2 space-y-1">
+              {c.risk_factors.map((rf, i) => (
+                <li key={i} className="text-xs text-orange-300 bg-orange-500/8 border border-orange-500/20 rounded px-2 py-1">⚠ {rf}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {/* Simulator button */}
+      <button
+        onClick={() => navigate(`/simulator?S=${c.current_price}&sigma=${c.iv.toFixed(2)}&ticker=${c.ticker}&ivr=${c.iv_rank ?? 0}`)}
+        className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+      >
+        → Открыть в симуляторе
+      </button>
+    </div>
+  )
+}
+
+// ── Holding row with edit/delete ───────────────────────────────────────────────
+
+function HoldingRow({
+  holding, onEdit, onDelete,
+}: { holding: StockHolding; onEdit: (h: StockHolding) => void; onDelete: (id: string) => void }) {
+  return (
+    <div className="flex items-center gap-3 bg-gray-800/40 border border-gray-700/40 rounded-xl px-4 py-3 text-sm">
+      <div className="font-bold text-white w-16">{holding.ticker}</div>
+      <div className="text-gray-300 flex-1">{holding.shares} акций · ${holding.cost_basis.toFixed(2)} себест.</div>
+      <div className="text-gray-500 text-xs">{Math.floor(holding.shares / 100)} контракт{Math.floor(holding.shares / 100) !== 1 ? 'а' : ''}</div>
+      {holding.notes && <div className="text-gray-600 text-xs truncate max-w-[120px]">{holding.notes}</div>}
+      <button onClick={() => onEdit(holding)} className="text-gray-500 hover:text-blue-400 text-xs transition-colors">Изм.</button>
+      <button onClick={() => onDelete(holding.id)} className="text-gray-500 hover:text-red-400 text-xs transition-colors">✕</button>
+    </div>
+  )
+}
+
+// ── Portfolio tab ──────────────────────────────────────────────────────────────
+
+function PortfolioTab() {
+  const navigate = useNavigate()
+  const [holdings, setHoldings] = useState<StockHolding[]>([])
+  const [loading, setLoading] = useState(false)
+  const [scanResults, setScanResults] = useState<HoldingScanResult[] | null>(null)
+  const [scanning, setScanning] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [editTarget, setEditTarget] = useState<StockHolding | null>(null)
+
+  // Form state
+  const [form, setForm] = useState({ ticker: '', shares: '', cost_basis: '', notes: '' })
+  const [formError, setFormError] = useState<string | null>(null)
+  const [formLoading, setFormLoading] = useState(false)
+
+  useEffect(() => {
+    listHoldings(PORTFOLIO_SESSION).then(setHoldings).catch(() => {})
+  }, [])
+
+  const resetForm = () => { setForm({ ticker: '', shares: '', cost_basis: '', notes: '' }); setEditTarget(null); setFormError(null) }
+
+  const handleSubmit = async () => {
+    const ticker = form.ticker.trim().toUpperCase()
+    const shares = parseInt(form.shares)
+    const cost_basis = parseFloat(form.cost_basis)
+    if (!ticker || !shares || !cost_basis) { setFormError('Заполните тикер, кол-во акций и себестоимость'); return }
+    if (shares < 100) { setFormError('Минимум 100 акций (1 контракт покрытого колла)'); return }
+    if (shares % 100 !== 0) { setFormError('Кол-во акций должно быть кратно 100'); return }
+    setFormLoading(true); setFormError(null)
+    try {
+      if (editTarget) {
+        const updated = await updateHolding(editTarget.id, { shares, cost_basis, notes: form.notes || undefined })
+        setHoldings(h => h.map(x => x.id === updated.id ? updated : x))
+      } else {
+        const added = await addHolding({ user_session_id: PORTFOLIO_SESSION, ticker, shares, cost_basis, notes: form.notes || undefined })
+        setHoldings(h => [...h, added])
+      }
+      resetForm()
+    } catch (e: any) {
+      const d = e?.response?.data?.detail
+      setFormError((Array.isArray(d) ? d[0]?.msg : d) || e?.message || 'Ошибка')
+    } finally {
+      setFormLoading(false)
+    }
+  }
+
+  const handleDelete = async (id: string) => {
+    await deleteHolding(id).catch(() => {})
+    setHoldings(h => h.filter(x => x.id !== id))
+    setScanResults(r => r ? r.filter(x => x.holding_id !== id) : r)
+  }
+
+  const handleEdit = (h: StockHolding) => {
+    setEditTarget(h)
+    setForm({ ticker: h.ticker, shares: String(h.shares), cost_basis: String(h.cost_basis), notes: h.notes ?? '' })
+  }
+
+  const handleScan = async () => {
+    setScanning(true); setError(null); setScanResults(null)
+    try {
+      const res = await runCoveredCallScan(PORTFOLIO_SESSION)
+      setScanResults(res.results)
+    } catch (e: any) {
+      const d = e?.response?.data?.detail
+      setError((Array.isArray(d) ? d[0]?.msg : d) || e?.message || 'Ошибка сканирования')
+    } finally {
+      setScanning(false)
+    }
+  }
+
+  const inputCls = 'bg-gray-800 text-white rounded-lg px-3 py-2 text-sm border border-gray-700 focus:outline-none focus:border-blue-500'
+
+  return (
+    <div className="space-y-6">
+      {/* Info banner */}
+      <div className="bg-blue-500/8 border border-blue-500/20 rounded-xl px-4 py-3 text-xs text-gray-400 leading-relaxed">
+        <span className="text-blue-300 font-semibold">Покрытые коллы (Covered Calls) — </span>
+        стратегия фарма премии на акциях которые вы уже держите. Добавь свои позиции и получи список лучших
+        коллов для продажи: OTM 25–45 DTE, дельта 0.15–0.38. Каждый контракт = 100 акций.
+      </div>
+
+      {/* Add / Edit form */}
+      <div className="card space-y-4">
+        <h3 className="text-sm font-semibold text-white">{editTarget ? `Редактировать: ${editTarget.ticker}` : 'Добавить позицию'}</h3>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">Тикер</label>
+            <input className={inputCls + ' w-full uppercase'} placeholder="AAPL"
+              value={form.ticker} disabled={!!editTarget}
+              onChange={e => setForm(f => ({ ...f, ticker: e.target.value.toUpperCase() }))} />
+          </div>
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">Акций (кратно 100)</label>
+            <input type="number" className={inputCls + ' w-full'} placeholder="100" min={100} step={100}
+              value={form.shares}
+              onChange={e => setForm(f => ({ ...f, shares: e.target.value }))} />
+          </div>
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">Себестоимость ($)</label>
+            <input type="text" inputMode="decimal" className={inputCls + ' w-full'} placeholder="150.00"
+              value={form.cost_basis}
+              onChange={e => { if (/^[0-9]*\.?[0-9]*$/.test(e.target.value)) setForm(f => ({ ...f, cost_basis: e.target.value })) }} />
+          </div>
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">Заметки (опц.)</label>
+            <input className={inputCls + ' w-full'} placeholder="Долгосрочная позиция"
+              value={form.notes}
+              onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
+          </div>
+        </div>
+        {formError && <div className="text-red-400 text-xs">{formError}</div>}
+        <div className="flex gap-2">
+          <button onClick={handleSubmit} disabled={formLoading}
+            className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium disabled:opacity-50 transition-colors">
+            {formLoading ? 'Сохранение…' : editTarget ? 'Сохранить' : 'Добавить'}
+          </button>
+          {editTarget && (
+            <button onClick={resetForm} className="px-4 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm transition-colors">
+              Отмена
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Holdings list */}
+      {holdings.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-xs text-gray-500 font-semibold uppercase tracking-wide">Мои позиции ({holdings.length})</div>
+          {holdings.map(h => (
+            <HoldingRow key={h.id} holding={h} onEdit={handleEdit} onDelete={handleDelete} />
+          ))}
+          <button onClick={handleScan} disabled={scanning}
+            className="mt-2 w-full py-3 rounded-xl bg-green-600 hover:bg-green-500 text-white font-semibold text-sm disabled:opacity-50 transition-colors flex items-center justify-center gap-2">
+            {scanning ? (
+              <>
+                <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+                Сканируем покрытые коллы…
+              </>
+            ) : '🎯 Найти покрытые коллы для всех позиций'}
+          </button>
+        </div>
+      )}
+
+      {holdings.length === 0 && (
+        <div className="text-center py-12 text-gray-600 text-sm">
+          Добавьте акции которые держите — система найдёт лучшие коллы для продажи
+        </div>
+      )}
+
+      {error && <div className="bg-red-900/20 border border-red-700/40 rounded-xl p-4 text-red-300 text-sm">{error}</div>}
+
+      {/* Scan results */}
+      {scanResults && (
+        <div className="space-y-6">
+          <div className="text-sm text-gray-400">
+            Найдено <span className="text-white font-semibold">{scanResults.reduce((s, r) => s + r.candidates.length, 0)}</span> вариантов покрытых коллов
+          </div>
+          {scanResults.map(result => (
+            <div key={result.holding_id} className="space-y-3">
+              {/* Holding header */}
+              <div className="flex items-center gap-3 flex-wrap">
+                <span className="text-white font-bold text-lg">{result.ticker}</span>
+                <span className="text-gray-400 text-sm">{result.shares} акций · ${result.cost_basis.toFixed(2)} себест.</span>
+                {result.current_price && (
+                  <span className={`text-sm font-medium ${result.current_price >= result.cost_basis ? 'text-green-400' : 'text-red-400'}`}>
+                    Текущая: ${result.current_price.toFixed(2)}
+                    {' '}({((result.current_price - result.cost_basis) / result.cost_basis * 100).toFixed(1)}%)
+                  </span>
+                )}
+                {result.iv_rank != null && (
+                  <span className={`text-xs px-2 py-0.5 rounded-full border ${result.iv_rank >= 50 ? 'text-green-400 border-green-500/40 bg-green-500/10' : result.iv_rank >= 30 ? 'text-yellow-400 border-yellow-500/40 bg-yellow-500/10' : 'text-gray-400 border-gray-600'}`}>
+                    IVR {result.iv_rank.toFixed(0)}
+                  </span>
+                )}
+                <span className="text-gray-600 text-xs">{result.contracts_available} контр. доступно</span>
+              </div>
+
+              {result.error && (
+                <div className="text-red-400 text-sm bg-red-900/20 rounded-lg p-3">{result.error}</div>
+              )}
+
+              {!result.error && result.candidates.length === 0 && (
+                <div className="text-gray-600 text-sm bg-gray-800/30 rounded-xl p-4">
+                  Подходящих коллов не найдено — возможно, низкий IVR или недостаточная ликвидность
+                </div>
+              )}
+
+              <div className="space-y-3">
+                {result.candidates.map((c, i) => (
+                  <CoveredCallCard key={i} c={c} navigate={navigate} />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main Scanner Page ──────────────────────────────────────────────────────────
 
 export default function Scanner() {
-  const [activeTab, setActiveTab] = useState<'standard' | 'naked' | 'universe'>('standard')
+  const [activeTab, setActiveTab] = useState<'standard' | 'naked' | 'universe' | 'portfolio'>('standard')
   const [tickerInput, setTickerInput] = useState('')
   const [selectedTickers, setSelectedTickers] = useState<string[]>([])
   const [strategy, setStrategy] = useState('any')
@@ -1316,6 +1630,7 @@ export default function Scanner() {
           { id: 'standard', label: 'Стандартный сканер', desc: 'Все стратегии', color: 'bg-blue-600' },
           { id: 'naked', label: 'Непокрытые опционы', desc: 'Short без покрытия', color: 'bg-red-700' },
           { id: 'universe', label: 'Вселенная', desc: 'S&P 500 / NASDAQ', color: 'bg-purple-600' },
+          { id: 'portfolio', label: 'Мой портфель', desc: 'Покрытые коллы', color: 'bg-green-700' },
         ] as const).map(t => (
           <button
             key={t.id}
@@ -1340,7 +1655,10 @@ export default function Scanner() {
       {/* Naked scanner tab */}
       {activeTab === 'naked' && <NakedScannerTab />}
 
-      {/* Standard scanner — hidden when naked or universe tab active */}
+      {/* Portfolio / covered call tab */}
+      {activeTab === 'portfolio' && <PortfolioTab />}
+
+      {/* Standard scanner — hidden when other tabs active */}
       {activeTab === 'standard' && <>
 
       {/* Config panel */}

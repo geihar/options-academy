@@ -626,6 +626,103 @@ export async function fetchSqueezeUniverse(minShortFloat = 10): Promise<Universe
   return res.data
 }
 
+// ── Portfolio holdings + covered call scan ────────────────────────────────────
+
+export interface StockHolding {
+  id: string
+  user_session_id: string
+  ticker: string
+  shares: number
+  cost_basis: number
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CoveredCallCandidate {
+  ticker: string
+  current_price: number
+  shares: number
+  cost_basis: number
+  strike: number
+  expiry: string
+  days_to_expiry: number
+  market_price: number
+  bid: number
+  ask: number
+  volume: number
+  open_interest: number
+  iv: number
+  delta: number
+  theta: number
+  iv_rank: number | null
+  premium_per_contract: number
+  annual_yield_on_cost: number
+  annual_yield_on_current: number
+  downside_protection_pct: number
+  max_profit_if_assigned: number
+  static_return_pct: number
+  otm_pct: number
+  days_to_earnings: number | null
+  risk_factors: string[]
+  score: number
+  quality: string
+}
+
+export interface HoldingScanResult {
+  holding_id: string
+  ticker: string
+  shares: number
+  cost_basis: number
+  current_price: number | null
+  iv_rank: number | null
+  contracts_available: number
+  candidates: CoveredCallCandidate[]
+  error: string | null
+}
+
+export interface CoveredCallScanResponse {
+  results: HoldingScanResult[]
+  total_candidates: number
+}
+
+export async function listHoldings(session_id: string): Promise<StockHolding[]> {
+  const res = await apiClient.get<StockHolding[]>(`/api/portfolio/${session_id}`)
+  return res.data
+}
+
+export async function addHolding(params: {
+  user_session_id: string
+  ticker: string
+  shares: number
+  cost_basis: number
+  notes?: string
+}): Promise<StockHolding> {
+  const res = await apiClient.post<StockHolding>('/api/portfolio', params)
+  return res.data
+}
+
+export async function updateHolding(
+  holding_id: string,
+  params: { shares?: number; cost_basis?: number; notes?: string },
+): Promise<StockHolding> {
+  const res = await apiClient.put<StockHolding>(`/api/portfolio/${holding_id}`, params)
+  return res.data
+}
+
+export async function deleteHolding(holding_id: string): Promise<void> {
+  await apiClient.delete(`/api/portfolio/${holding_id}`)
+}
+
+export async function runCoveredCallScan(session_id: string): Promise<CoveredCallScanResponse> {
+  const res = await apiClient.post<CoveredCallScanResponse>(
+    `/api/portfolio/${session_id}/covered-call-scan`,
+    {},
+    { timeout: 120_000 },
+  )
+  return res.data
+}
+
 export async function fetchSimulation(params: {
   S: number
   K: number

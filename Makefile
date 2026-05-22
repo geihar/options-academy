@@ -13,7 +13,7 @@ dev:
 # ── Services ──────────────────────────────────────────────────────────────────
 
 backend:
-	cd backend && $(abspath $(UVICORN)) main:app --reload --port 3001
+	cd backend && $(abspath $(UVICORN)) main:app --reload --port 3221
 
 frontend:
 	cd frontend && npm run dev
